@@ -1,0 +1,106 @@
+# wallet-trading-audit
+
+Local Python scaffold for a personal cross-chain trading analytics system focused on Solana and BNB EVM wallet activity.
+
+This repository is intentionally **not** a web app, dashboard, or API server. The current scope is a local analysis engine that:
+
+- ingests raw wallet transaction data
+- normalizes Solana and EVM transactions into a unified schema
+- reconstructs trades using FIFO cost basis
+- computes real trading performance metrics
+- supports behavioral analysis such as overtrading, re-entry, profit capture, and drawdowns
+
+The current commit only establishes the project structure, canonical schema, metric definitions, and report placeholders. Real ingestion and PnL logic are intentionally deferred.
+
+## Design Principles
+
+- Auditability over convenience
+- Contract or mint addresses only, never token symbols, for asset identity
+- No guessed provider fields, endpoints, or chain-specific payload layouts
+- Explicit `TODO` markers anywhere real Solana or EVM payload mapping is still undecided
+- Deterministic, replayable transformations from `data/raw/` to `data/processed/`
+
+## Project Layout
+
+```text
+wallet-trading-audit/
+  src/
+    ingestion/
+    normalize/
+    pnl/
+    analytics/
+    reports/
+  data/
+    raw/
+    processed/
+    exports/
+  notebooks/
+  tests/
+```
+
+## Canonical Transaction Schema
+
+The minimum normalized transaction record is defined in [src/normalize/schema.py](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/normalize/schema.py).
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `chain` | enum | `solana` or `bnb_evm` |
+| `wallet` | string | Wallet under analysis |
+| `tx_hash` | string | Transaction signature/hash as provided by the chain |
+| `block_time` | timezone-aware datetime | UTC-normalized event timestamp |
+| `token_in_address` | string or null | Contract/mint address for the incoming leg |
+| `token_out_address` | string or null | Contract/mint address for the outgoing leg |
+| `amount_in` | decimal | Explicitly set to `0` when absent |
+| `amount_out` | decimal | Explicitly set to `0` when absent |
+| `usd_value` | decimal or null | Null until trusted valuation exists |
+| `fee_native` | decimal | Native chain fee in the chain's gas token |
+| `fee_usd` | decimal or null | Null until trusted fee valuation exists |
+| `event_type` | enum | `swap`, `transfer`, `fee`, or `unknown` |
+| `source` | string or null | DEX or protocol name if known |
+
+Notes:
+
+- The schema requires the columns to exist even when an event is one-sided. In those cases, the missing token leg stays `null` and the corresponding amount is `0`.
+- Additional deterministic ordering fields may be needed later if a single transaction expands into multiple normalized rows with the same timestamp. That extension is intentionally deferred until raw payloads are available.
+
+## Module Status
+
+- [src/ingestion](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/ingestion): raw source interfaces and Solana/BNB EVM ingestion placeholders
+- [src/normalize](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/normalize): canonical schema and normalizer interfaces
+- [src/pnl](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/pnl): FIFO lot and trade reconstruction interfaces
+- [src/analytics](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/analytics): metric definitions and formulas
+- [src/reports](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/reports): export/report definitions and placeholders
+- [tests](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/tests): lightweight scaffold verification only
+
+## Phased Implementation Plan
+
+1. Raw ingestion
+   Capture verbatim Solana and BNB EVM wallet transaction payloads into `data/raw/` with immutable snapshots and provenance metadata.
+2. Deterministic normalization
+   Map raw payloads into the canonical schema without guessing fields. Add explicit per-chain transform tests using saved fixtures.
+3. FIFO trade reconstruction
+   Build lot opening, lot closing, and partial-fill handling with deterministic ordering rules and fee allocation strategy.
+4. Price enrichment
+   Add a pricing layer for historical USD valuation, fee conversion, and open-position marks needed for unrealized PnL and advanced capture metrics.
+5. Performance analytics
+   Compute net, realized, and unrealized PnL plus win/loss, expectancy, volume, and token or wallet-level breakdowns.
+6. Behavioral analytics
+   Add re-entry detection, trade-sequence analysis, drawdown framing, and profit-capture vs giveback metrics.
+7. Reports and exports
+   Produce flat CSV or parquet outputs for normalized transactions, FIFO roundtrips, open positions, and metric summaries.
+
+## Quick Start
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+PYTHONPATH=src python -m unittest discover -s tests
+```
+
+## Current Limitations
+
+- No ingestion backends are implemented yet
+- No Solana or EVM field mapping is assumed yet
+- No FIFO reconstruction logic is implemented yet
+- No pricing, PnL, or reporting pipeline is implemented yet
