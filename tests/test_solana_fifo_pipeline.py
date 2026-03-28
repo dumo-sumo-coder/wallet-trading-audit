@@ -49,11 +49,17 @@ class SolanaFixturePipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result.total_raw_transactions_reviewed, 5)
-        self.assertEqual(len(result.normalized_transactions), 3)
-        self.assertEqual(len(result.unsupported_transactions), 2)
+        self.assertEqual(len(result.normalized_transactions), 5)
+        self.assertEqual(len(result.unsupported_transactions), 0)
         self.assertEqual(
             [transaction.event_type for transaction in result.normalized_transactions],
-            [EventType.SWAP, EventType.SWAP, EventType.TRANSFER],
+            [
+                EventType.SWAP,
+                EventType.SWAP,
+                EventType.TRANSFER,
+                EventType.TRANSFER,
+                EventType.TRANSFER,
+            ],
         )
         self.assertEqual(result.fifo_pipeline_result.realized_pnl_usd, Decimal("50"))
         self.assertEqual(len(result.fifo_pipeline_result.fifo_result.trade_matches), 1)
@@ -66,7 +72,7 @@ class SolanaFixturePipelineTests(unittest.TestCase):
         self.assertEqual(trade_match.realized_pnl_usd, Decimal("50"))
         self.assertEqual(len(result.fifo_pipeline_result.remaining_positions), 0)
         self.assertEqual(len(result.fifo_pipeline_result.fifo_result.open_lots), 0)
-        self.assertEqual(len(result.fifo_pipeline_result.fifo_result.ignored_transfers), 1)
+        self.assertEqual(len(result.fifo_pipeline_result.fifo_result.ignored_transfers), 3)
 
     def test_unsupported_fixtures_fail_explicitly_and_predictably(self) -> None:
         result = run_solana_fixture_fifo_pipeline(
@@ -77,18 +83,7 @@ class SolanaFixturePipelineTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(
-            [item.fixture_name for item in result.unsupported_transactions],
-            [
-                "solana_transaction_response_example.json",
-                "solana_wallet_snapshot.json",
-            ],
-        )
-        for unsupported in result.unsupported_transactions:
-            self.assertIn(
-                "Unsupported Solana normalization case",
-                unsupported.reason,
-            )
+        self.assertEqual(result.unsupported_transactions, ())
 
     def test_fees_remain_explicit_and_separate(self) -> None:
         result = run_solana_fixture_fifo_pipeline(
@@ -100,14 +95,26 @@ class SolanaFixturePipelineTests(unittest.TestCase):
         )
 
         recorded_fees = result.fifo_pipeline_result.fifo_result.recorded_fees
-        self.assertEqual(len(recorded_fees), 3)
+        self.assertEqual(len(recorded_fees), 5)
         self.assertEqual(
             [fee.event_type for fee in recorded_fees],
-            [EventType.SWAP, EventType.SWAP, EventType.TRANSFER],
+            [
+                EventType.TRANSFER,
+                EventType.TRANSFER,
+                EventType.SWAP,
+                EventType.SWAP,
+                EventType.TRANSFER,
+            ],
         )
         self.assertEqual(
             [fee.fee_native for fee in recorded_fees],
-            [Decimal("0.000005"), Decimal("0.000005"), Decimal("0.000005")],
+            [
+                Decimal("0.000005"),
+                Decimal("0.000005"),
+                Decimal("0.000005"),
+                Decimal("0.000005"),
+                Decimal("0.000005"),
+            ],
         )
         self.assertEqual(
             result.fifo_pipeline_result.realized_pnl_usd,
@@ -126,16 +133,10 @@ class SolanaFixturePipelineTests(unittest.TestCase):
         summary = summarize_solana_fixture_pipeline(result)
 
         self.assertEqual(summary.total_raw_transactions_reviewed, 5)
-        self.assertEqual(summary.normalized_transactions_count, 3)
-        self.assertEqual(summary.unsupported_transactions_count, 2)
+        self.assertEqual(summary.normalized_transactions_count, 5)
+        self.assertEqual(summary.unsupported_transactions_count, 0)
         self.assertEqual(summary.realized_pnl_usd, Decimal("50"))
-        self.assertEqual(
-            summary.unsupported_reasons,
-            (
-                "solana_transaction_response_example.json: Unsupported Solana normalization case: native SOL moved without a single non-zero wallet token delta. TODO: add fixture-driven rules for rent, account creation, and other non-trade balance changes.",
-                "solana_wallet_snapshot.json: Unsupported Solana normalization case: native SOL moved without a single non-zero wallet token delta. TODO: add fixture-driven rules for rent, account creation, and other non-trade balance changes.",
-            ),
-        )
+        self.assertEqual(summary.unsupported_reasons, ())
 
 
 if __name__ == "__main__":

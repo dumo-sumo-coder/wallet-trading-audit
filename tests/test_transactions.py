@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -172,11 +173,66 @@ class NormalizeTransactionTests(unittest.TestCase):
         self.assertEqual(Decimal(str(adapted["amount_out"])), Decimal("0"))
         self.assertEqual(Decimal(str(adapted["fee_native"])), Decimal("0.000005"))
 
-    def test_normalize_solana_tx_rejects_ambiguous_fixture(self) -> None:
+    def test_normalize_solana_tx_normalizes_native_sol_outflow_fixture(self) -> None:
+        raw = load_json_fixture("solana_transaction_response_example.json")
+
+        normalized = normalize_transaction({"chain": "solana", **raw})
+
+        self.assertEqual(normalized.event_type, EventType.TRANSFER)
+        self.assertIsNone(normalized.token_in_address)
+        self.assertEqual(
+            normalized.token_out_address,
+            "So11111111111111111111111111111111111111112",
+        )
+        self.assertEqual(normalized.amount_in, Decimal("0"))
+        self.assertEqual(normalized.amount_out, Decimal("0.00203928"))
+        self.assertEqual(normalized.fee_native, Decimal("0.000005"))
+        self.assertEqual(
+            normalized.tx_hash,
+            "56rgv1Fqg7MHLoct3ESNx8DHeC2c5TFYyK1As35paWn2KYuRuXPFZK3XDEwkkZemVfmnKrkj17mMzz4N1d8kMYC4",
+        )
+        self.assertEqual(
+            normalized.block_time,
+            datetime(2025, 11, 21, 18, 56, 55, tzinfo=timezone.utc),
+        )
+
+    def test_normalize_solana_tx_normalizes_snapshot_envelope_native_outflow(self) -> None:
         raw = load_json_fixture("solana_wallet_snapshot.json")
 
-        with self.assertRaisesRegex(ValueError, "Unsupported Solana normalization case"):
-            normalize_solana_tx(raw)
+        adapted = normalize_solana_tx(raw)
+
+        self.assertEqual(adapted["event_type"], "transfer")
+        self.assertIsNone(adapted["token_in_address"])
+        self.assertEqual(
+            adapted["token_out_address"],
+            "So11111111111111111111111111111111111111112",
+        )
+        self.assertEqual(Decimal(str(adapted["amount_out"])), Decimal("0.00203928"))
+        self.assertEqual(Decimal(str(adapted["fee_native"])), Decimal("0.000005"))
+
+    def test_normalize_solana_tx_rejects_ambiguous_multi_token_fixture(self) -> None:
+        raw = load_json_fixture("solana_transaction_response_buy_example.json")
+        ambiguous = copy.deepcopy(raw)
+        ambiguous["result"]["meta"]["postTokenBalances"].append(
+            {
+                "accountIndex": 2,
+                "mint": "Es9vMFrzaCERmJfr6Woj7q4Tt6kRXKuX3sX5Yucs5cjB",
+                "owner": "47eFuHR9ste9kopiJ9eRxcwahmE62JovbKe5r7AjANut",
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                    "amount": "1000000",
+                    "decimals": 6,
+                    "uiAmount": 1.0,
+                    "uiAmountString": "1",
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported Solana normalization case: multiple wallet token balance deltas detected",
+        ):
+            normalize_solana_tx(ambiguous)
 
 
 if __name__ == "__main__":

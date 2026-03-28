@@ -63,12 +63,12 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
     tx_hash = _extract_solana_signature(payload)
     block_time = _extract_solana_block_time(result)
     fee_lamports = Decimal(_require_int(meta, "fee"))
-    wallet_native_delta_lamports = _extract_wallet_native_delta_lamports(
+    wallet_native_delta_lamports = _extract_wallet_native_sol_delta_lamports(
         result,
         wallet=wallet,
     )
     economic_native_delta_lamports = wallet_native_delta_lamports + fee_lamports
-    token_deltas = _extract_wallet_token_deltas(meta, wallet=wallet)
+    token_deltas = _extract_wallet_token_balance_deltas(meta, wallet=wallet)
     non_zero_token_deltas = {
         mint: amount_delta
         for mint, amount_delta in token_deltas.items()
@@ -76,11 +76,13 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
     }
 
     fee_native = _lamports_to_sol(fee_lamports)
-    if len(non_zero_token_deltas) > 1:
+    ambiguous_reason = _detect_ambiguous_solana_case(
+        non_zero_token_deltas=non_zero_token_deltas,
+        economic_native_delta_lamports=economic_native_delta_lamports,
+    )
+    if ambiguous_reason is not None:
         raise ValueError(
-            "Unsupported Solana normalization case: multiple wallet token balance "
-            "deltas detected. TODO: add fixture-driven handling for multi-leg or "
-            "protocol-specific flows before classifying this transaction."
+            f"Unsupported Solana normalization case: {ambiguous_reason}"
         )
 
     if not non_zero_token_deltas:
@@ -96,10 +98,28 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
                 fee_native=fee_native,
                 event_type=EventType.FEE,
             )
-        raise ValueError(
-            "Unsupported Solana normalization case: native SOL moved without a "
-            "single non-zero wallet token delta. TODO: add fixture-driven rules "
-            "for rent, account creation, and other non-trade balance changes."
+        if economic_native_delta_lamports > ZERO:
+            return _build_solana_row(
+                wallet=wallet,
+                tx_hash=tx_hash,
+                block_time=block_time,
+                token_in_address=SOLANA_WRAPPED_SOL_MINT,
+                token_out_address=None,
+                amount_in=_lamports_to_sol(economic_native_delta_lamports),
+                amount_out=ZERO,
+                fee_native=fee_native,
+                event_type=EventType.TRANSFER,
+            )
+        return _build_solana_row(
+            wallet=wallet,
+            tx_hash=tx_hash,
+            block_time=block_time,
+            token_in_address=None,
+            token_out_address=SOLANA_WRAPPED_SOL_MINT,
+            amount_in=ZERO,
+            amount_out=_lamports_to_sol(-economic_native_delta_lamports),
+            fee_native=fee_native,
+            event_type=EventType.TRANSFER,
         )
 
     mint, token_delta = next(iter(non_zero_token_deltas.items()))
@@ -131,11 +151,7 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
                 fee_native=fee_native,
                 event_type=EventType.SWAP,
             )
-        raise ValueError(
-            "Unsupported Solana normalization case: token inflow with net SOL "
-            "inflow is ambiguous. TODO: add fixture-driven rules before "
-            "classifying rewards, refunds, or protocol-specific flows."
-        )
+        raise AssertionError("Unexpected ambiguous Solana inflow case reached")
 
     token_out_amount = -token_delta
     if economic_native_delta_lamports == ZERO:
@@ -150,22 +166,18 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
             fee_native=fee_native,
             event_type=EventType.TRANSFER,
         )
-    if economic_native_delta_lamports > ZERO:
-        return _build_solana_row(
-            wallet=wallet,
-            tx_hash=tx_hash,
-            block_time=block_time,
-            token_in_address=SOLANA_WRAPPED_SOL_MINT,
-            token_out_address=mint,
-            amount_in=_lamports_to_sol(economic_native_delta_lamports),
-            amount_out=token_out_amount,
-            fee_native=fee_native,
-            event_type=EventType.SWAP,
-        )
-    raise ValueError(
-        "Unsupported Solana normalization case: token outflow with net SOL "
-        "outflow is ambiguous. TODO: add fixture-driven rules before "
-        "classifying liquidity adds, burns, or protocol-specific flows."
+    if economic_native_delta_lamports <= ZERO:
+        raise AssertionError("Unexpected ambiguous Solana outflow case reached")
+    return _build_solana_row(
+        wallet=wallet,
+        tx_hash=tx_hash,
+        block_time=block_time,
+        token_in_address=SOLANA_WRAPPED_SOL_MINT,
+        token_out_address=mint,
+        amount_in=_lamports_to_sol(economic_native_delta_lamports),
+        amount_out=token_out_amount,
+        fee_native=fee_native,
+        event_type=EventType.SWAP,
     )
 
 
@@ -316,7 +328,7 @@ def _extract_solana_block_time(result: Mapping[str, object]) -> str:
     return datetime.fromtimestamp(block_time, tz=timezone.utc).isoformat()
 
 
-def _extract_wallet_native_delta_lamports(
+def _extract_wallet_native_sol_delta_lamports(
     result: Mapping[str, object],
     *,
     wallet: str,
@@ -354,7 +366,7 @@ def _extract_wallet_native_delta_lamports(
     return post_balance - pre_balance
 
 
-def _extract_wallet_token_deltas(
+def _extract_wallet_token_balance_deltas(
     meta: Mapping[str, object],
     *,
     wallet: str,
@@ -371,6 +383,37 @@ def _extract_wallet_token_deltas(
     for mint in sorted(set(pre_balances) | set(post_balances)):
         token_deltas[mint] = post_balances.get(mint, ZERO) - pre_balances.get(mint, ZERO)
     return token_deltas
+
+
+def _detect_ambiguous_solana_case(
+    *,
+    non_zero_token_deltas: Mapping[str, Decimal],
+    economic_native_delta_lamports: Decimal,
+) -> str | None:
+    if len(non_zero_token_deltas) > 1:
+        return (
+            "multiple wallet token balance deltas detected. TODO: add "
+            "fixture-driven handling for multi-leg or protocol-specific flows "
+            "before classifying this transaction."
+        )
+
+    if not non_zero_token_deltas:
+        return None
+
+    token_delta = next(iter(non_zero_token_deltas.values()))
+    if token_delta > ZERO and economic_native_delta_lamports > ZERO:
+        return (
+            "token inflow with net SOL inflow is ambiguous. TODO: add "
+            "fixture-driven rules before classifying rewards, refunds, or "
+            "protocol-specific flows."
+        )
+    if token_delta < ZERO and economic_native_delta_lamports < ZERO:
+        return (
+            "token outflow with net SOL outflow is ambiguous. TODO: add "
+            "fixture-driven rules before classifying liquidity adds, burns, or "
+            "protocol-specific flows."
+        )
+    return None
 
 
 def _extract_wallet_token_amounts(
