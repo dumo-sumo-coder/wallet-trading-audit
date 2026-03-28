@@ -6,10 +6,28 @@ from .metrics import (
     MetricDefinition,
     MetricStatus,
 )
+from .performance import (
+    ClosedTradePerformance,
+    PnlDistributionBucket,
+    TradePerformanceAnalysis,
+    TradePerformanceSummary,
+    analyze_fifo_pipeline_performance,
+    analyze_fifo_trade_performance,
+    build_closed_trade_performance_rows,
+    summarize_closed_trade_performance,
+)
 
 __all__ = [
+    "ClosedTradePerformance",
     "METRIC_DEFINITIONS",
     "MetricCategory",
     "MetricDefinition",
     "MetricStatus",
+    "PnlDistributionBucket",
+    "TradePerformanceAnalysis",
+    "TradePerformanceSummary",
+    "analyze_fifo_pipeline_performance",
+    "analyze_fifo_trade_performance",
+    "build_closed_trade_performance_rows",
+    "summarize_closed_trade_performance",
 ]
