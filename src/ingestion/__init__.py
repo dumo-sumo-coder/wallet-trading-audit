@@ -7,9 +7,11 @@ from .manifest import (
     DEFAULT_WALLET_MANIFEST_PATH,
     ManifestFetchRecord,
     ManifestFetchRun,
+    ManifestPreflightResult,
     WalletManifestEntry,
     fetch_from_wallet_manifest,
     load_wallet_manifest,
+    preflight_wallet_manifest,
 )
 from .solana import SolanaWalletSource
 from .solana_client import SolanaRpcClient
@@ -27,6 +29,7 @@ __all__ = [
     "DEFAULT_WALLET_MANIFEST_PATH",
     "ManifestFetchRecord",
     "ManifestFetchRun",
+    "ManifestPreflightResult",
     "RawTransactionSource",
     "SolanaRpcClient",
     "WalletManifestEntry",
@@ -36,5 +39,6 @@ __all__ = [
     "inspect_solana_transaction_response",
     "load_wallet_manifest",
     "load_json_mapping",
+    "preflight_wallet_manifest",
     "SolanaWalletSource",
 ]

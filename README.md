@@ -133,6 +133,8 @@ Create a local `.env` file before running real ingestion:
 cp .env.example .env
 ```
 
+Keep `.env` uncommitted. This repo ignores it by default.
+
 Required variables:
 
 - `ENV`: local environment label such as `dev` or `prod`
@@ -144,10 +146,24 @@ Optional variables:
 - `SOLANA_RPC_URL`: explicit Solana RPC override if you do not want to derive it from `HELIUS_API_KEY`
 - `EVM_RPC_URL`: reserved for future direct EVM RPC ingestion
 
-Example ingestion usage after configuring `.env`:
+If you prefer to keep editor or terminal env-file injection disabled, manually load
+the variables into your current shell before running commands:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+Example secure local workflow:
 
 ```bash
 cp .env.example .env
+set -a
+source .env
+set +a
+python scripts/check_env_ready.py
+python scripts/fetch_from_wallet_manifest.py --preflight
 python scripts/fetch_from_wallet_manifest.py
 ```
 

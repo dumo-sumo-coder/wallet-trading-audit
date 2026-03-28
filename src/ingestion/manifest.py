@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from config import build_missing_env_message, get_env_var_status
+
 from .evm_client import EvmWalletClient
 from .solana_client import SolanaRpcClient
 
@@ -56,6 +58,21 @@ class ManifestFetchRun:
     @property
     def failure_count(self) -> int:
         return sum(1 for record in self.records if record.status == "failure")
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestPreflightResult:
+    manifest_path: str
+    total_wallet_count: int
+    solana_wallet_count: int
+    bnb_evm_wallet_count: int
+    helius_api_key_status: str
+    etherscan_api_key_status: str
+    errors: tuple[str, ...]
+
+    @property
+    def is_ready(self) -> bool:
+        return not self.errors
 
 
 def load_wallet_manifest(manifest_path: Path) -> tuple[WalletManifestEntry, ...]:
@@ -137,8 +154,8 @@ def fetch_from_wallet_manifest(
     """Fetch raw wallet snapshots for every validated manifest row."""
 
     entries = load_wallet_manifest(manifest_path)
-    solana_fetcher = solana_client or SolanaRpcClient()
-    evm_fetcher = evm_client or EvmWalletClient()
+    solana_fetcher = solana_client
+    evm_fetcher = evm_client
     records: list[ManifestFetchRecord] = []
 
     for entry in entries:
@@ -156,11 +173,15 @@ def fetch_from_wallet_manifest(
 
         try:
             if entry.chain == "solana":
+                if solana_fetcher is None:
+                    solana_fetcher = SolanaRpcClient()
                 snapshot = solana_fetcher.fetch_recent_transaction_history(
                     entry.wallet,
                     limit=solana_limit,
                 )
             elif entry.chain == "bnb_evm":
+                if evm_fetcher is None:
+                    evm_fetcher = EvmWalletClient()
                 snapshot = evm_fetcher.fetch_recent_transaction_history(
                     entry.wallet,
                     page=evm_page,
@@ -225,6 +246,44 @@ def fetch_from_wallet_manifest(
     return ManifestFetchRun(
         manifest_path=_relative_path_text(manifest_path, repository_root),
         records=tuple(records),
+    )
+
+
+def preflight_wallet_manifest(
+    manifest_path: Path,
+    *,
+    repository_root: Path,
+) -> ManifestPreflightResult:
+    """Check manifest and env readiness without making provider calls."""
+
+    entries = load_wallet_manifest(manifest_path)
+    solana_wallet_count = sum(1 for entry in entries if entry.chain == "solana")
+    bnb_evm_wallet_count = sum(1 for entry in entries if entry.chain == "bnb_evm")
+    helius_api_key_status = get_env_var_status("HELIUS_API_KEY")
+    etherscan_api_key_status = get_env_var_status("ETHERSCAN_API_KEY")
+    errors: list[str] = []
+
+    if solana_wallet_count == 0:
+        errors.append("No Solana wallets were found in the wallet manifest.")
+    if solana_wallet_count > 0 and helius_api_key_status != "present":
+        errors.append(
+            build_missing_env_message(
+                "HELIUS_API_KEY",
+                purpose_text=(
+                    "At least one Solana wallet is present in the manifest, so Solana "
+                    "preflight requires HELIUS_API_KEY."
+                ),
+            )
+        )
+
+    return ManifestPreflightResult(
+        manifest_path=_relative_path_text(manifest_path, repository_root),
+        total_wallet_count=len(entries),
+        solana_wallet_count=solana_wallet_count,
+        bnb_evm_wallet_count=bnb_evm_wallet_count,
+        helius_api_key_status=helius_api_key_status,
+        etherscan_api_key_status=etherscan_api_key_status,
+        errors=tuple(errors),
     )
 
 

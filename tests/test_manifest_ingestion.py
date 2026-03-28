@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ if str(SRC) not in sys.path:
 from ingestion.manifest import (  # noqa: E402
     fetch_from_wallet_manifest,
     load_wallet_manifest,
+    preflight_wallet_manifest,
 )
 
 
@@ -249,6 +251,69 @@ class WalletManifestFetchTests(unittest.TestCase):
             self.assertIsNone(failed_metadata["snapshot_path"])
             self.assertIn("rate limited", failed_metadata["error_message"])
             self.assertEqual(success_record.status, "success")
+
+    def test_fetch_from_wallet_manifest_lazily_skips_solana_client_when_not_needed(self) -> None:
+        manifest_text = "wallet,chain,label\n0xabc,bnb_evm,Label Two\n"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+
+            run = fetch_from_wallet_manifest(
+                manifest_path,
+                repository_root=repository_root,
+                evm_client=_FakeEvmClient(),
+            )
+
+        self.assertEqual(run.success_count, 1)
+        self.assertEqual(run.failure_count, 0)
+
+    def test_preflight_wallet_manifest_reports_present_or_missing_secret_status_only(self) -> None:
+        manifest_text = "wallet,chain,label\nWalletOne,solana,Label One\n"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+
+            with patch.dict(os.environ, {}, clear=True):
+                missing = preflight_wallet_manifest(
+                    manifest_path,
+                    repository_root=repository_root,
+                )
+
+            with patch.dict(os.environ, {"HELIUS_API_KEY": "super-secret"}, clear=True):
+                present = preflight_wallet_manifest(
+                    manifest_path,
+                    repository_root=repository_root,
+                )
+
+        self.assertEqual(missing.helius_api_key_status, "missing")
+        self.assertEqual(present.helius_api_key_status, "present")
+        self.assertFalse(missing.is_ready)
+        self.assertTrue(present.is_ready)
+        self.assertNotIn("super-secret", "\n".join(missing.errors))
+
+    def test_preflight_wallet_manifest_requires_at_least_one_solana_wallet(self) -> None:
+        manifest_text = "wallet,chain,label\n0xabc,bnb_evm,Label Two\n"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+
+            result = preflight_wallet_manifest(
+                manifest_path,
+                repository_root=repository_root,
+            )
+
+        self.assertFalse(result.is_ready)
+        self.assertEqual(result.solana_wallet_count, 0)
+        self.assertIn("No Solana wallets", result.errors[0])
 
 
 if __name__ == "__main__":

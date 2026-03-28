@@ -48,6 +48,7 @@ class SolanaRpcClientTests(unittest.TestCase):
             snapshot["transaction_responses"],
             [transaction_one, transaction_two],
         )
+        self.assertEqual(snapshot["source"]["rpc_url"], "https://example.solana.invalid")
         self.assertEqual(snapshot["capture"]["response_bodies_preserved"], True)
         self.assertEqual(snapshot["capture"]["http_headers_preserved"], False)
         self.assertEqual(snapshot["transaction_request"]["method"], "getTransaction")
@@ -56,6 +57,23 @@ class SolanaRpcClientTests(unittest.TestCase):
             0,
         )
         self.assertEqual(mock_rpc_request.call_count, 3)
+
+    def test_fetch_recent_transaction_history_redacts_rpc_query_params_in_saved_metadata(self) -> None:
+        client = SolanaRpcClient(rpc_url="https://example.solana.invalid/?api-key=secret-value")
+        signatures_response = {"jsonrpc": "2.0", "result": [], "id": 1}
+
+        with patch.object(
+            client,
+            "_rpc_request",
+            return_value=signatures_response,
+        ):
+            snapshot = client.fetch_recent_transaction_history(
+                "TestSolanaWallet11111111111111111111111111111",
+                limit=1,
+            )
+
+        self.assertEqual(snapshot["source"]["rpc_url"], "https://example.solana.invalid/?redacted")
+        self.assertNotIn("secret-value", json.dumps(snapshot))
 
     def test_save_recent_transaction_history_writes_under_solana_raw_directory(self) -> None:
         client = SolanaRpcClient(rpc_url="https://example.solana.invalid")

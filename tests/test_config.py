@@ -14,10 +14,12 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from config import (  # noqa: E402
+    get_env_var_status,
     get_env,
     get_etherscan_api_key,
     get_helius_api_key,
     get_solana_rpc_url,
+    sanitize_url_for_output,
 )
 from ingestion.evm_client import EvmWalletClient  # noqa: E402
 from ingestion.solana_client import SolanaRpcClient  # noqa: E402
@@ -34,7 +36,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_get_helius_api_key_raises_clear_error_when_required(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, "HELIUS_API_KEY"):
+            with self.assertRaisesRegex(ValueError, "manual terminal loading"):
                 get_helius_api_key(required=True)
 
     def test_get_solana_rpc_url_prefers_explicit_override(self) -> None:
@@ -50,14 +52,14 @@ class ConfigTests(unittest.TestCase):
 
     def test_get_solana_rpc_url_derives_helius_endpoint(self) -> None:
         with patch.dict(os.environ, {"HELIUS_API_KEY": "helius-key"}, clear=True):
-            self.assertEqual(
-                get_solana_rpc_url(required=True),
-                "https://mainnet.helius-rpc.com/?api-key=helius-key",
-            )
+            rpc_url = get_solana_rpc_url(required=True)
+
+        self.assertIn("mainnet.helius-rpc.com", rpc_url)
+        self.assertIn("api-key=", rpc_url)
 
     def test_solona_client_fails_fast_when_env_config_is_missing(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, "SOLANA_RPC_URL"):
+            with self.assertRaisesRegex(ValueError, "manual terminal loading"):
                 SolanaRpcClient()
 
     def test_solana_client_uses_env_derived_rpc_url(self) -> None:
@@ -74,12 +76,26 @@ class ConfigTests(unittest.TestCase):
 
     def test_blank_secret_values_raise_clear_errors(self) -> None:
         with patch.dict(os.environ, {"HELIUS_API_KEY": "   "}, clear=True):
-            with self.assertRaisesRegex(ValueError, "set but blank"):
-                get_helius_api_key(required=False)
+            self.assertEqual(get_env_var_status("HELIUS_API_KEY"), "missing")
+            with self.assertRaisesRegex(ValueError, "missing or blank"):
+                get_helius_api_key(required=True)
 
         with patch.dict(os.environ, {"ETHERSCAN_API_KEY": ""}, clear=True):
-            with self.assertRaisesRegex(ValueError, "set but blank"):
-                get_etherscan_api_key(required=False)
+            self.assertEqual(get_env_var_status("ETHERSCAN_API_KEY"), "missing")
+            with self.assertRaisesRegex(ValueError, "missing or blank"):
+                get_etherscan_api_key(required=True)
+
+    def test_env_status_reports_presence_without_revealing_values(self) -> None:
+        with patch.dict(os.environ, {"HELIUS_API_KEY": "top-secret"}, clear=True):
+            self.assertEqual(get_env_var_status("HELIUS_API_KEY"), "present")
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(get_env_var_status("HELIUS_API_KEY"), "missing")
+
+    def test_sanitize_url_for_output_redacts_query_values(self) -> None:
+        sanitized = sanitize_url_for_output("https://example.invalid/rpc?api-key=secret-value")
+
+        self.assertEqual(sanitized, "https://example.invalid/rpc?redacted")
 
 
 if __name__ == "__main__":

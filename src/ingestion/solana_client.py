@@ -13,7 +13,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from config import get_solana_rpc_url
+from config import get_solana_rpc_url, sanitize_url_for_output
 
 
 class SolanaRpcClient:
@@ -43,6 +43,7 @@ class SolanaRpcClient:
         timeout_seconds: int = 30,
     ) -> None:
         self.rpc_url = rpc_url or get_solana_rpc_url(required=True)
+        self.rpc_url_for_output = sanitize_url_for_output(self.rpc_url)
         self.timeout_seconds = timeout_seconds
 
     def fetch_recent_transaction_history(
@@ -110,7 +111,7 @@ class SolanaRpcClient:
             "fetched_at_utc": fetched_at,
             "source": {
                 "provider": "solana_json_rpc",
-                "rpc_url": self.rpc_url,
+                "rpc_url": self.rpc_url_for_output,
             },
             "capture": {
                 "normalization_applied": False,

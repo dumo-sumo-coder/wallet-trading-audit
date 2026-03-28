@@ -11,6 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from config import get_manual_env_load_instructions  # noqa: E402
 from ingestion.evm_client import EvmWalletClient  # noqa: E402
 from ingestion.solana_client import SolanaRpcClient  # noqa: E402
 from ingestion.solana_review import (  # noqa: E402
@@ -88,34 +89,43 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     exported_fixture_paths: tuple[Path, ...] = ()
-    if args.chain == "solana":
-        snapshot_path = SolanaRpcClient(
-            rpc_url=args.rpc_url,
-        ).save_recent_transaction_history(
-            args.wallet,
-            repository_root=ROOT,
-            limit=args.limit,
-        )
-        if args.copy_solana_payload_fixtures:
-            snapshot = load_json_mapping(snapshot_path)
-            exported_fixture_paths = export_representative_transaction_payloads(
-                snapshot,
-                ROOT / "tests" / "fixtures" / "raw_solana",
-                limit=args.solana_fixture_count,
+    try:
+        if args.chain == "solana":
+            snapshot_path = SolanaRpcClient(
+                rpc_url=args.rpc_url,
+            ).save_recent_transaction_history(
+                args.wallet,
+                repository_root=ROOT,
+                limit=args.limit,
             )
-    else:
-        if args.copy_solana_payload_fixtures:
-            raise SystemExit(
-                "--copy-solana-payload-fixtures is only supported with --chain solana"
+            if args.copy_solana_payload_fixtures:
+                snapshot = load_json_mapping(snapshot_path)
+                exported_fixture_paths = export_representative_transaction_payloads(
+                    snapshot,
+                    ROOT / "tests" / "fixtures" / "raw_solana",
+                    limit=args.solana_fixture_count,
+                )
+        else:
+            if args.copy_solana_payload_fixtures:
+                raise ValueError(
+                    "--copy-solana-payload-fixtures is only supported with --chain solana"
+                )
+            snapshot_path = EvmWalletClient(
+                api_key=args.api_key,
+            ).save_recent_transaction_history(
+                args.wallet,
+                repository_root=ROOT,
+                page=args.page,
+                offset=args.offset,
             )
-        snapshot_path = EvmWalletClient(
-            api_key=args.api_key,
-        ).save_recent_transaction_history(
-            args.wallet,
-            repository_root=ROOT,
-            page=args.page,
-            offset=args.offset,
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print(
+            "If you prefer manual terminal loading, run "
+            f"'{get_manual_env_load_instructions()}' before this script.",
+            file=sys.stderr,
         )
+        return 1
 
     print(snapshot_path)
     for fixture_path in exported_fixture_paths:
