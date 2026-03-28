@@ -13,6 +13,10 @@ if str(SRC) not in sys.path:
 
 from ingestion.evm_client import EvmWalletClient  # noqa: E402
 from ingestion.solana_client import SolanaRpcClient  # noqa: E402
+from ingestion.solana_review import (  # noqa: E402
+    export_representative_transaction_payloads,
+    load_json_mapping,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,11 +62,26 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional Etherscan V2 API key for BNB/EVM fetches.",
     )
+    parser.add_argument(
+        "--copy-solana-payload-fixtures",
+        action="store_true",
+        help=(
+            "For Solana snapshots, copy one or more raw getTransaction response "
+            "bodies into tests/fixtures/raw_solana/."
+        ),
+    )
+    parser.add_argument(
+        "--solana-fixture-count",
+        type=int,
+        default=2,
+        help="How many Solana transaction response bodies to copy when fixture export is enabled.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    exported_fixture_paths: tuple[Path, ...] = ()
     if args.chain == "solana":
         snapshot_path = SolanaRpcClient(
             rpc_url=args.rpc_url,
@@ -71,7 +90,18 @@ def main() -> int:
             repository_root=ROOT,
             limit=args.limit,
         )
+        if args.copy_solana_payload_fixtures:
+            snapshot = load_json_mapping(snapshot_path)
+            exported_fixture_paths = export_representative_transaction_payloads(
+                snapshot,
+                ROOT / "tests" / "fixtures" / "raw_solana",
+                limit=args.solana_fixture_count,
+            )
     else:
+        if args.copy_solana_payload_fixtures:
+            raise SystemExit(
+                "--copy-solana-payload-fixtures is only supported with --chain solana"
+            )
         snapshot_path = EvmWalletClient(
             api_key=args.api_key,
         ).save_recent_transaction_history(
@@ -82,6 +112,8 @@ def main() -> int:
         )
 
     print(snapshot_path)
+    for fixture_path in exported_fixture_paths:
+        print(fixture_path)
     return 0
 
 

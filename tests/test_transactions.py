@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+RAW_SOLANA_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "raw_solana"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -58,6 +59,13 @@ def bnb_evm_raw_row() -> dict[str, object]:
     }
 
 
+def load_json_fixture(name: str) -> dict[str, object]:
+    import json
+
+    fixture_path = RAW_SOLANA_FIXTURE_DIR / name
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
+
+
 class NormalizeTransactionTests(unittest.TestCase):
     def test_normalize_transaction_accepts_canonical_like_rows(self) -> None:
         normalized = normalize_transaction(solana_raw_row())
@@ -102,6 +110,73 @@ class NormalizeTransactionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "amount_in"):
             normalize_transaction(raw)
+
+    def test_normalize_solana_tx_normalizes_obvious_buy_fixture(self) -> None:
+        raw = load_json_fixture("solana_transaction_response_buy_example.json")
+
+        normalized = normalize_transaction({"chain": "solana", **raw})
+
+        self.assertEqual(normalized.chain, Chain.SOLANA)
+        self.assertEqual(normalized.event_type, EventType.SWAP)
+        self.assertEqual(
+            normalized.tx_hash,
+            "5uyM8JpVQCBq9x3AjC8nH9fYH5x7c3qvKc6PjH9Tn7rR7hTj6yV7iM6m2T9g7Z6dQwL7jVn4pQy3mK8sR1n4bUy",
+        )
+        self.assertEqual(
+            normalized.block_time,
+            datetime(2025, 11, 21, 19, 13, 35, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            normalized.token_in_address,
+            "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
+        )
+        self.assertEqual(
+            normalized.token_out_address,
+            "So11111111111111111111111111111111111111112",
+        )
+        self.assertEqual(normalized.amount_in, Decimal("25"))
+        self.assertEqual(normalized.amount_out, Decimal("1"))
+        self.assertEqual(normalized.fee_native, Decimal("0.000005"))
+        self.assertIsNone(normalized.usd_value)
+
+    def test_normalize_solana_tx_normalizes_obvious_sell_fixture(self) -> None:
+        raw = load_json_fixture("solana_transaction_response_sell_example.json")
+
+        adapted = normalize_solana_tx(raw)
+
+        self.assertEqual(adapted["event_type"], "swap")
+        self.assertEqual(
+            adapted["token_in_address"],
+            "So11111111111111111111111111111111111111112",
+        )
+        self.assertEqual(
+            adapted["token_out_address"],
+            "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
+        )
+        self.assertEqual(Decimal(str(adapted["amount_in"])), Decimal("1.5"))
+        self.assertEqual(Decimal(str(adapted["amount_out"])), Decimal("25"))
+        self.assertEqual(Decimal(str(adapted["fee_native"])), Decimal("0.000005"))
+
+    def test_normalize_solana_tx_normalizes_transfer_like_fixture(self) -> None:
+        raw = load_json_fixture("solana_transaction_response_transfer_in_example.json")
+
+        adapted = normalize_solana_tx(raw)
+
+        self.assertEqual(adapted["event_type"], "transfer")
+        self.assertEqual(
+            adapted["token_in_address"],
+            "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
+        )
+        self.assertIsNone(adapted["token_out_address"])
+        self.assertEqual(Decimal(str(adapted["amount_in"])), Decimal("25"))
+        self.assertEqual(Decimal(str(adapted["amount_out"])), Decimal("0"))
+        self.assertEqual(Decimal(str(adapted["fee_native"])), Decimal("0.000005"))
+
+    def test_normalize_solana_tx_rejects_ambiguous_fixture(self) -> None:
+        raw = load_json_fixture("solana_wallet_snapshot.json")
+
+        with self.assertRaisesRegex(ValueError, "Unsupported Solana normalization case"):
+            normalize_solana_tx(raw)
 
 
 if __name__ == "__main__":

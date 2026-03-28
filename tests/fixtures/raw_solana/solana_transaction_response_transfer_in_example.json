@@ -1,0 +1,72 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "blockTime": 1763754415,
+    "meta": {
+      "err": null,
+      "fee": 5000,
+      "preBalances": [
+        10000000000,
+        2039280,
+        1,
+        1461600
+      ],
+      "postBalances": [
+        9999995000,
+        2039280,
+        1,
+        1461600
+      ],
+      "preTokenBalances": [],
+      "postTokenBalances": [
+        {
+          "accountIndex": 1,
+          "mint": "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
+          "owner": "47eFuHR9ste9kopiJ9eRxcwahmE62JovbKe5r7AjANut",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "25000000",
+            "decimals": 6,
+            "uiAmount": 25.0,
+            "uiAmountString": "25"
+          }
+        }
+      ],
+      "status": {
+        "Ok": null
+      }
+    },
+    "slot": 423118902,
+    "transaction": {
+      "message": {
+        "accountKeys": [
+          "47eFuHR9ste9kopiJ9eRxcwahmE62JovbKe5r7AjANut",
+          "9vLSZ1gujMzisVrK5r3ZBXLVJMrF3fp6BtAUDyD94nW2",
+          "11111111111111111111111111111111",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "header": {
+          "numReadonlySignedAccounts": 0,
+          "numReadonlyUnsignedAccounts": 2,
+          "numRequiredSignatures": 1
+        },
+        "instructions": [
+          {
+            "accounts": [
+              0,
+              1
+            ],
+            "data": "transfer",
+            "programIdIndex": 3
+          }
+        ],
+        "recentBlockhash": "ExampleTransferBlockhash11111111111111111111"
+      },
+      "signatures": [
+        "4fN7pQ2rS5tV8wX1yZ3aC6eH9jK2mP4sT7uW9xY2bD5gH8jL1nQ3rT6vX9zB2cD4fG7hJ9kL2mN5pQ8sT1uV"
+      ]
+    },
+    "version": 0
+  },
+  "id": 1
+}

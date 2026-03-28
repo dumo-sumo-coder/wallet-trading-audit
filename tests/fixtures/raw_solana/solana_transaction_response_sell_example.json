@@ -1,0 +1,72 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "blockTime": 1763753415,
+    "meta": {
+      "err": null,
+      "fee": 5000,
+      "preBalances": [
+        10000000000,
+        2039280,
+        1,
+        1461600
+      ],
+      "postBalances": [
+        11499995000,
+        2039280,
+        1,
+        1461600
+      ],
+      "preTokenBalances": [
+        {
+          "accountIndex": 1,
+          "mint": "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
+          "owner": "47eFuHR9ste9kopiJ9eRxcwahmE62JovbKe5r7AjANut",
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "uiTokenAmount": {
+            "amount": "25000000",
+            "decimals": 6,
+            "uiAmount": 25.0,
+            "uiAmountString": "25"
+          }
+        }
+      ],
+      "postTokenBalances": [],
+      "status": {
+        "Ok": null
+      }
+    },
+    "slot": 423118901,
+    "transaction": {
+      "message": {
+        "accountKeys": [
+          "47eFuHR9ste9kopiJ9eRxcwahmE62JovbKe5r7AjANut",
+          "9vLSZ1gujMzisVrK5r3ZBXLVJMrF3fp6BtAUDyD94nW2",
+          "11111111111111111111111111111111",
+          "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        ],
+        "header": {
+          "numReadonlySignedAccounts": 0,
+          "numReadonlyUnsignedAccounts": 2,
+          "numRequiredSignatures": 1
+        },
+        "instructions": [
+          {
+            "accounts": [
+              0,
+              1
+            ],
+            "data": "sell",
+            "programIdIndex": 3
+          }
+        ],
+        "recentBlockhash": "ExampleSellBlockhash11111111111111111111111"
+      },
+      "signatures": [
+        "3eQFvN6wL8tH7bQ2pK9sR6cW1xY5mJ4uT8nP2qV7zA3sD5fG6hJ8kL2mN4pR6tU8wY1qC3eF5gH7jK9mP2sV4w"
+      ]
+    },
+    "version": 0
+  },
+  "id": 1
+}

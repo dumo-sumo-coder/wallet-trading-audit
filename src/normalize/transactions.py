@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Mapping
 
 from .schema import (
@@ -11,6 +12,10 @@ from .schema import (
     EventType,
     NormalizedTransaction,
 )
+
+LAMPORTS_PER_SOL = Decimal("1000000000")
+SOLANA_WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
+ZERO = Decimal("0")
 
 
 def normalize_transaction(raw: Mapping[str, object]) -> NormalizedTransaction:
@@ -29,9 +34,9 @@ def normalize_transaction(raw: Mapping[str, object]) -> NormalizedTransaction:
 def normalize_solana_tx(raw: Mapping[str, object]) -> dict[str, object]:
     """Return a flat canonical-like row for a Solana transaction."""
 
-    # TODO: When real Solana raw fixtures exist, map only verified signature,
-    # balance-delta, and instruction fields instead of inferring them here.
-    return _normalize_flat_transaction(raw, expected_chain=Chain.SOLANA)
+    if _looks_like_flat_normalized_row(raw):
+        return _normalize_flat_transaction(raw, expected_chain=Chain.SOLANA)
+    return _normalize_solana_provider_payload(raw)
 
 
 def normalize_evm_tx(raw: Mapping[str, object]) -> dict[str, object]:
@@ -41,6 +46,127 @@ def normalize_evm_tx(raw: Mapping[str, object]) -> dict[str, object]:
     # verified transaction, receipt, and log fields instead of guessing event
     # semantics from provider-specific payloads.
     return _normalize_flat_transaction(raw, expected_chain=Chain.BNB_EVM)
+
+
+def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, object]:
+    payload, wallet_override = _extract_solana_transaction_payload(raw)
+    result = _require_mapping(payload, "result")
+    meta = _require_mapping(result, "meta")
+
+    if meta.get("err") is not None:
+        raise ValueError(
+            "Unsupported Solana normalization case: failed transactions are out of "
+            "scope for first-pass normalization."
+        )
+
+    wallet = _resolve_solana_wallet(payload, wallet_override=wallet_override)
+    tx_hash = _extract_solana_signature(payload)
+    block_time = _extract_solana_block_time(result)
+    fee_lamports = Decimal(_require_int(meta, "fee"))
+    wallet_native_delta_lamports = _extract_wallet_native_delta_lamports(
+        result,
+        wallet=wallet,
+    )
+    economic_native_delta_lamports = wallet_native_delta_lamports + fee_lamports
+    token_deltas = _extract_wallet_token_deltas(meta, wallet=wallet)
+    non_zero_token_deltas = {
+        mint: amount_delta
+        for mint, amount_delta in token_deltas.items()
+        if amount_delta != ZERO
+    }
+
+    fee_native = _lamports_to_sol(fee_lamports)
+    if len(non_zero_token_deltas) > 1:
+        raise ValueError(
+            "Unsupported Solana normalization case: multiple wallet token balance "
+            "deltas detected. TODO: add fixture-driven handling for multi-leg or "
+            "protocol-specific flows before classifying this transaction."
+        )
+
+    if not non_zero_token_deltas:
+        if economic_native_delta_lamports == ZERO:
+            return _build_solana_row(
+                wallet=wallet,
+                tx_hash=tx_hash,
+                block_time=block_time,
+                token_in_address=None,
+                token_out_address=None,
+                amount_in=ZERO,
+                amount_out=ZERO,
+                fee_native=fee_native,
+                event_type=EventType.FEE,
+            )
+        raise ValueError(
+            "Unsupported Solana normalization case: native SOL moved without a "
+            "single non-zero wallet token delta. TODO: add fixture-driven rules "
+            "for rent, account creation, and other non-trade balance changes."
+        )
+
+    mint, token_delta = next(iter(non_zero_token_deltas.items()))
+    if token_delta > ZERO:
+        if economic_native_delta_lamports == ZERO:
+            return _build_solana_row(
+                wallet=wallet,
+                tx_hash=tx_hash,
+                block_time=block_time,
+                token_in_address=mint,
+                token_out_address=None,
+                amount_in=token_delta,
+                amount_out=ZERO,
+                fee_native=fee_native,
+                event_type=EventType.TRANSFER,
+            )
+        if economic_native_delta_lamports < ZERO:
+            # TODO: native-vs-wrapped treatment is still provisional. We reuse the
+            # repo's existing wrapped-SOL mint convention until raw fixture review
+            # establishes a better canonical representation for native SOL.
+            return _build_solana_row(
+                wallet=wallet,
+                tx_hash=tx_hash,
+                block_time=block_time,
+                token_in_address=mint,
+                token_out_address=SOLANA_WRAPPED_SOL_MINT,
+                amount_in=token_delta,
+                amount_out=_lamports_to_sol(-economic_native_delta_lamports),
+                fee_native=fee_native,
+                event_type=EventType.SWAP,
+            )
+        raise ValueError(
+            "Unsupported Solana normalization case: token inflow with net SOL "
+            "inflow is ambiguous. TODO: add fixture-driven rules before "
+            "classifying rewards, refunds, or protocol-specific flows."
+        )
+
+    token_out_amount = -token_delta
+    if economic_native_delta_lamports == ZERO:
+        return _build_solana_row(
+            wallet=wallet,
+            tx_hash=tx_hash,
+            block_time=block_time,
+            token_in_address=None,
+            token_out_address=mint,
+            amount_in=ZERO,
+            amount_out=token_out_amount,
+            fee_native=fee_native,
+            event_type=EventType.TRANSFER,
+        )
+    if economic_native_delta_lamports > ZERO:
+        return _build_solana_row(
+            wallet=wallet,
+            tx_hash=tx_hash,
+            block_time=block_time,
+            token_in_address=SOLANA_WRAPPED_SOL_MINT,
+            token_out_address=mint,
+            amount_in=_lamports_to_sol(economic_native_delta_lamports),
+            amount_out=token_out_amount,
+            fee_native=fee_native,
+            event_type=EventType.SWAP,
+        )
+    raise ValueError(
+        "Unsupported Solana normalization case: token outflow with net SOL "
+        "outflow is ambiguous. TODO: add fixture-driven rules before "
+        "classifying liquidity adds, burns, or protocol-specific flows."
+    )
 
 
 def _normalize_flat_transaction(
@@ -60,6 +186,18 @@ def _normalize_flat_transaction(
             raw.get(field_name),
         )
     return adapted
+
+
+def _looks_like_flat_normalized_row(raw: Mapping[str, object]) -> bool:
+    if any(
+        key in raw
+        for key in ("jsonrpc", "result", "transaction_responses", "signatures_response")
+    ):
+        return False
+    return any(
+        key in raw
+        for key in ("tx_hash", "block_time", "amount_in", "amount_out", "event_type")
+    )
 
 
 def _require_chain(raw: Mapping[str, object]) -> Chain:
@@ -90,6 +228,221 @@ def _validate_supported_shape(raw: Mapping[str, object], *, expected_chain: Chai
     )
 
 
+def _extract_solana_transaction_payload(
+    raw: Mapping[str, object],
+) -> tuple[Mapping[str, object], str | None]:
+    wallet_override = _optional_text(raw.get("wallet"))
+    transaction_responses = raw.get("transaction_responses")
+    if transaction_responses is not None:
+        if not isinstance(transaction_responses, list):
+            raise ValueError("Solana snapshot field 'transaction_responses' must be a list")
+        if len(transaction_responses) != 1:
+            raise ValueError(
+                "Solana snapshot normalization currently requires exactly one "
+                "transaction response. TODO: iterate snapshots row-by-row before "
+                "normalizing multi-transaction captures."
+            )
+        payload = transaction_responses[0]
+        if not isinstance(payload, Mapping):
+            raise ValueError("Each Solana transaction response must be an object")
+        return payload, wallet_override
+    if "result" in raw:
+        return raw, wallet_override
+    raise ValueError(
+        "solana normalization currently supports only raw getTransaction "
+        "response bodies or single-response Solana snapshot envelopes."
+    )
+
+
+def _resolve_solana_wallet(
+    payload: Mapping[str, object],
+    *,
+    wallet_override: str | None,
+) -> str:
+    if wallet_override is not None:
+        return wallet_override
+
+    result = _require_mapping(payload, "result")
+    meta = _require_mapping(result, "meta")
+    owners: set[str] = set()
+    for balances_key in ("preTokenBalances", "postTokenBalances"):
+        rows = meta.get(balances_key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            owner = _optional_text(row.get("owner"))
+            if owner is not None:
+                owners.add(owner)
+
+    if len(owners) == 1:
+        return next(iter(owners))
+    if not owners:
+        raise ValueError(
+            "Unsupported Solana normalization case: could not resolve a single "
+            "wallet owner from token balances. TODO: pass an explicit wallet or "
+            "add fixture-driven wallet resolution rules."
+        )
+    raise ValueError(
+        "Unsupported Solana normalization case: multiple wallet owners appear in "
+        "token balances. TODO: add fixture-driven account ownership rules before "
+        "normalizing this payload."
+    )
+
+
+def _extract_solana_signature(payload: Mapping[str, object]) -> str:
+    result = _require_mapping(payload, "result")
+    transaction = _require_mapping(result, "transaction")
+    signatures = transaction.get("signatures")
+    if not isinstance(signatures, list) or not signatures:
+        raise ValueError(
+            "Unsupported Solana normalization case: transaction.signatures is missing"
+        )
+    first_signature = _optional_text(signatures[0])
+    if first_signature is None:
+        raise ValueError(
+            "Unsupported Solana normalization case: transaction signature is blank"
+        )
+    return first_signature
+
+
+def _extract_solana_block_time(result: Mapping[str, object]) -> str:
+    block_time = result.get("blockTime")
+    if not isinstance(block_time, (int, float)):
+        raise ValueError(
+            "Unsupported Solana normalization case: blockTime is missing or invalid"
+        )
+    return datetime.fromtimestamp(block_time, tz=timezone.utc).isoformat()
+
+
+def _extract_wallet_native_delta_lamports(
+    result: Mapping[str, object],
+    *,
+    wallet: str,
+) -> Decimal:
+    transaction = _require_mapping(result, "transaction")
+    message = _require_mapping(transaction, "message")
+    account_keys = message.get("accountKeys")
+    if not isinstance(account_keys, list):
+        raise ValueError(
+            "Unsupported Solana normalization case: accountKeys is missing"
+        )
+    normalized_account_keys = [_require_text_value(key, "accountKeys entry") for key in account_keys]
+    try:
+        wallet_index = normalized_account_keys.index(wallet)
+    except ValueError as exc:
+        raise ValueError(
+            "Unsupported Solana normalization case: resolved wallet is not present "
+            "in accountKeys."
+        ) from exc
+
+    meta = _require_mapping(result, "meta")
+    pre_balances = meta.get("preBalances")
+    post_balances = meta.get("postBalances")
+    if not isinstance(pre_balances, list) or not isinstance(post_balances, list):
+        raise ValueError(
+            "Unsupported Solana normalization case: preBalances/postBalances are missing"
+        )
+    if wallet_index >= len(pre_balances) or wallet_index >= len(post_balances):
+        raise ValueError(
+            "Unsupported Solana normalization case: wallet balance index is out of range"
+        )
+
+    pre_balance = Decimal(_require_int_like_value(pre_balances[wallet_index], "preBalances entry"))
+    post_balance = Decimal(_require_int_like_value(post_balances[wallet_index], "postBalances entry"))
+    return post_balance - pre_balance
+
+
+def _extract_wallet_token_deltas(
+    meta: Mapping[str, object],
+    *,
+    wallet: str,
+) -> dict[str, Decimal]:
+    pre_balances = _extract_wallet_token_amounts(
+        meta.get("preTokenBalances"),
+        wallet=wallet,
+    )
+    post_balances = _extract_wallet_token_amounts(
+        meta.get("postTokenBalances"),
+        wallet=wallet,
+    )
+    token_deltas: dict[str, Decimal] = {}
+    for mint in sorted(set(pre_balances) | set(post_balances)):
+        token_deltas[mint] = post_balances.get(mint, ZERO) - pre_balances.get(mint, ZERO)
+    return token_deltas
+
+
+def _extract_wallet_token_amounts(
+    raw_balances: object,
+    *,
+    wallet: str,
+) -> dict[str, Decimal]:
+    if raw_balances is None:
+        return {}
+    if not isinstance(raw_balances, list):
+        raise ValueError(
+            "Unsupported Solana normalization case: token balance rows must be lists"
+        )
+
+    token_amounts: dict[str, Decimal] = {}
+    for row in raw_balances:
+        if not isinstance(row, Mapping):
+            raise ValueError(
+                "Unsupported Solana normalization case: token balance row must be an object"
+            )
+        owner = _optional_text(row.get("owner"))
+        if owner != wallet:
+            continue
+        mint = _require_text_value(row.get("mint"), "token balance mint")
+        token_amounts[mint] = token_amounts.get(mint, ZERO) + _extract_ui_token_amount(row)
+    return token_amounts
+
+
+def _extract_ui_token_amount(row: Mapping[str, object]) -> Decimal:
+    ui_token_amount = row.get("uiTokenAmount")
+    if not isinstance(ui_token_amount, Mapping):
+        raise ValueError(
+            "Unsupported Solana normalization case: uiTokenAmount is missing"
+        )
+    ui_amount_string = _optional_text(ui_token_amount.get("uiAmountString"))
+    if ui_amount_string is not None:
+        return Decimal(ui_amount_string)
+
+    raw_amount = _require_text_value(ui_token_amount.get("amount"), "uiTokenAmount.amount")
+    decimals = _require_int(ui_token_amount, "decimals")
+    return Decimal(raw_amount) / (Decimal("10") ** decimals)
+
+
+def _build_solana_row(
+    *,
+    wallet: str,
+    tx_hash: str,
+    block_time: str,
+    token_in_address: str | None,
+    token_out_address: str | None,
+    amount_in: Decimal,
+    amount_out: Decimal,
+    fee_native: Decimal,
+    event_type: EventType,
+) -> dict[str, object]:
+    return {
+        "chain": Chain.SOLANA.value,
+        "wallet": wallet,
+        "tx_hash": tx_hash,
+        "block_time": block_time,
+        "token_in_address": token_in_address,
+        "token_out_address": token_out_address,
+        "amount_in": amount_in,
+        "amount_out": amount_out,
+        "usd_value": None,
+        "fee_native": fee_native,
+        "fee_usd": None,
+        "event_type": event_type.value,
+        "source": None,
+    }
+
+
 def _coerce_chain(value: object) -> Chain:
     if isinstance(value, Chain):
         return value
@@ -110,3 +463,45 @@ def _normalize_field_value(field_name: str, value: object) -> object:
     if isinstance(value, Chain) and field_name == "chain":
         return value.value
     return value
+
+
+def _require_mapping(raw: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = raw.get(key)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Unsupported payload shape: expected object at '{key}'")
+    return value
+
+
+def _require_int(raw: Mapping[str, object], key: str) -> int:
+    return _require_int_like_value(raw.get(key), key)
+
+
+def _require_int_like_value(value: object, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"Unsupported Solana normalization case: {label} must be numeric")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError(f"Unsupported Solana normalization case: {label} is blank")
+        return int(text)
+    raise ValueError(f"Unsupported Solana normalization case: {label} must be numeric")
+
+
+def _require_text_value(value: object, label: str) -> str:
+    text = _optional_text(value)
+    if text is None:
+        raise ValueError(f"Unsupported Solana normalization case: {label} is missing")
+    return text
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _lamports_to_sol(lamports: Decimal) -> Decimal:
+    return lamports / LAMPORTS_PER_SOL
