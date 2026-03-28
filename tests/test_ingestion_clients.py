@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -47,6 +48,13 @@ class SolanaRpcClientTests(unittest.TestCase):
             snapshot["transaction_responses"],
             [transaction_one, transaction_two],
         )
+        self.assertEqual(snapshot["capture"]["response_bodies_preserved"], True)
+        self.assertEqual(snapshot["capture"]["http_headers_preserved"], False)
+        self.assertEqual(snapshot["transaction_request"]["method"], "getTransaction")
+        self.assertEqual(
+            snapshot["transaction_request"]["max_supported_transaction_version"],
+            0,
+        )
         self.assertEqual(mock_rpc_request.call_count, 3)
 
     def test_save_recent_transaction_history_writes_under_solana_raw_directory(self) -> None:
@@ -54,6 +62,26 @@ class SolanaRpcClientTests(unittest.TestCase):
         snapshot = {
             "wallet": "TestSolanaWallet11111111111111111111111111111",
             "fetched_at_utc": "2026-03-28T12:00:00+00:00",
+            "capture": {
+                "normalization_applied": False,
+                "response_body_format": "json",
+                "response_bodies_preserved": True,
+                "http_headers_preserved": False,
+                "signature_order": "newest_first",
+                "retrieval_pattern": "getSignaturesForAddress_then_getTransaction",
+            },
+            "request": {
+                "method": "getSignaturesForAddress",
+                "limit": 20,
+                "before": None,
+                "commitment": "confirmed",
+            },
+            "transaction_request": {
+                "method": "getTransaction",
+                "commitment": "confirmed",
+                "encoding": "json",
+                "max_supported_transaction_version": 0,
+            },
             "signatures_response": {"result": []},
             "transaction_responses": [],
         }
@@ -79,7 +107,6 @@ class EvmWalletClientTests(unittest.TestCase):
     def test_fetch_recent_transaction_history_preserves_raw_api_responses(self) -> None:
         client = EvmWalletClient(
             api_key="test-key",
-            api_url="https://example.etherscan.invalid/v2/api",
         )
         normal_transactions = {"status": "1", "message": "OK", "result": [{"hash": "0x1"}]}
         internal_transactions = {"status": "1", "message": "OK", "result": []}
@@ -104,6 +131,14 @@ class EvmWalletClientTests(unittest.TestCase):
                 "erc20_transfers": erc20_transfers,
             },
         )
+        self.assertEqual(snapshot["source"]["provider"], "etherscan_v2_multichain")
+        self.assertEqual(snapshot["capture"]["response_bodies_preserved"], True)
+        self.assertEqual(snapshot["capture"]["http_headers_preserved"], False)
+        self.assertIn("paid-tier access", snapshot["capture"]["provider_access_note"])
+        self.assertEqual(
+            snapshot["request"]["actions"],
+            ["txlist", "txlistinternal", "tokentx"],
+        )
         self.assertEqual(mock_api_get.call_count, 3)
 
     def test_save_recent_transaction_history_writes_under_evm_raw_directory(self) -> None:
@@ -114,6 +149,24 @@ class EvmWalletClientTests(unittest.TestCase):
         snapshot = {
             "wallet": "0x1111222233334444555566667777888899990000",
             "fetched_at_utc": "2026-03-28T12:00:00+00:00",
+            "capture": {
+                "normalization_applied": False,
+                "response_body_format": "json",
+                "response_bodies_preserved": True,
+                "http_headers_preserved": False,
+                "provider_access_note": "Assumes paid-tier access.",
+            },
+            "request": {
+                "provider_family": "etherscan_v2",
+                "module": "account",
+                "actions": ["txlist", "txlistinternal", "tokentx"],
+                "chain_id": "56",
+                "startblock": "0",
+                "endblock": "9999999999",
+                "page": 1,
+                "offset": 20,
+                "sort": "desc",
+            },
             "responses": {
                 "normal_transactions": {"status": "1", "message": "OK", "result": []},
                 "internal_transactions": {"status": "1", "message": "OK", "result": []},
@@ -136,6 +189,15 @@ class EvmWalletClientTests(unittest.TestCase):
             self.assertEqual(output_path.parent, repository_root / "data" / "raw" / "evm")
             saved_snapshot = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(saved_snapshot, snapshot)
+
+    def test_bscscan_env_var_is_not_implicitly_treated_as_etherscan_v2_access(self) -> None:
+        with patch.dict(os.environ, {"BSCSCAN_API_KEY": "bsc-only-key"}, clear=True):
+            client = EvmWalletClient()
+
+        with self.assertRaisesRegex(ValueError, "ETHERSCAN_API_KEY"):
+            client.fetch_recent_transaction_history(
+                "0x1111222233334444555566667777888899990000",
+            )
 
 
 if __name__ == "__main__":

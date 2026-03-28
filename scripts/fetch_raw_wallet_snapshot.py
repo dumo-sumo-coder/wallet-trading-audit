@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--api-key",
         default=None,
-        help="Optional Etherscan-compatible API key for BNB/EVM fetches.",
+        help="Optional Etherscan V2 API key for BNB/EVM fetches.",
     )
     return parser.parse_args()
 

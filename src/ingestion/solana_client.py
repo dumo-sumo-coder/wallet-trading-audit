@@ -1,4 +1,8 @@
-"""Minimal Solana raw-ingestion client."""
+"""Minimal Solana raw-ingestion client.
+
+This client intentionally stores JSON-RPC response bodies only. It does not
+normalize transaction fields and it does not preserve HTTP headers.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +17,22 @@ DEFAULT_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
 
 
 class SolanaRpcClient:
-    """Fetch recent raw Solana wallet transaction data from public RPC."""
+    """Fetch recent raw Solana wallet transaction data from public RPC.
+
+    The current implementation uses:
+    - `getSignaturesForAddress` to list recent signatures, newest first
+    - `getTransaction` once per returned signature with `encoding="json"`
+
+    It preserves the JSON-RPC response bodies verbatim after JSON parsing, but
+    does not store raw bytes or HTTP response headers.
+    """
 
     # TODO: Add full pagination support with `before`/`until` traversal when
     # recent snapshots are no longer sufficient for audit needs.
     # TODO: Respect `Retry-After` and RPC-specific rate-limit behavior from
     # the public endpoint instead of surfacing HTTP failures directly.
+    # TODO: Revisit whether `confirmed` should remain the default commitment for
+    # audit snapshots, or whether long-horizon backfills should use `finalized`.
     # TODO: Review whether `maxSupportedTransactionVersion=0` remains
     # sufficient if newer transaction versions appear in target wallets.
 
@@ -56,6 +70,12 @@ class SolanaRpcClient:
         }
         if before is not None:
             signature_params["before"] = before
+        transaction_request = {
+            "method": "getTransaction",
+            "commitment": "confirmed",
+            "encoding": "json",
+            "max_supported_transaction_version": 0,
+        }
 
         signatures_response = self._rpc_request(
             method="getSignaturesForAddress",
@@ -74,9 +94,11 @@ class SolanaRpcClient:
                     params=[
                         signature,
                         {
-                            "commitment": "confirmed",
-                            "encoding": "json",
-                            "maxSupportedTransactionVersion": 0,
+                            "commitment": transaction_request["commitment"],
+                            "encoding": transaction_request["encoding"],
+                            "maxSupportedTransactionVersion": transaction_request[
+                                "max_supported_transaction_version"
+                            ],
                         },
                     ],
                 )
@@ -90,12 +112,21 @@ class SolanaRpcClient:
                 "provider": "solana_json_rpc",
                 "rpc_url": self.rpc_url,
             },
+            "capture": {
+                "normalization_applied": False,
+                "response_body_format": "json",
+                "response_bodies_preserved": True,
+                "http_headers_preserved": False,
+                "signature_order": "newest_first",
+                "retrieval_pattern": "getSignaturesForAddress_then_getTransaction",
+            },
             "request": {
                 "method": "getSignaturesForAddress",
                 "limit": limit,
                 "before": before,
                 "commitment": "confirmed",
             },
+            "transaction_request": transaction_request,
             "signatures_response": signatures_response,
             "transaction_responses": transaction_responses,
         }
@@ -159,7 +190,10 @@ class SolanaRpcClient:
         except URLError as exc:
             raise RuntimeError(f"Solana RPC request failed for method {method}") from exc
 
-        parsed = json.loads(raw_body)
+        try:
+            parsed = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Solana RPC returned invalid JSON for {method}") from exc
         if not isinstance(parsed, dict):
             raise ValueError(f"Solana RPC returned a non-object payload for {method}")
         if "error" in parsed:
