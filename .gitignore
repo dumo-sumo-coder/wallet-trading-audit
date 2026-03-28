@@ -8,6 +8,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+.env
 build/
 dist/
 .ipynb_checkpoints/

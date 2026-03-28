@@ -13,7 +13,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-DEFAULT_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
+from config import get_solana_rpc_url
 
 
 class SolanaRpcClient:
@@ -38,11 +38,11 @@ class SolanaRpcClient:
 
     def __init__(
         self,
-        rpc_url: str = DEFAULT_SOLANA_RPC_URL,
+        rpc_url: str | None = None,
         *,
         timeout_seconds: int = 30,
     ) -> None:
-        self.rpc_url = rpc_url
+        self.rpc_url = rpc_url or get_solana_rpc_url(required=True)
         self.timeout_seconds = timeout_seconds
 
     def fetch_recent_transaction_history(

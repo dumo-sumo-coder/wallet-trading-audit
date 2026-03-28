@@ -7,13 +7,14 @@ normalize transaction fields and it does not preserve HTTP headers.
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+from config import get_etherscan_api_key
 
 DEFAULT_ETHERSCAN_API_URL = "https://api.etherscan.io/v2/api"
 DEFAULT_BNB_CHAIN_ID = "56"
@@ -50,7 +51,7 @@ class EvmWalletClient:
         chain_id: str = DEFAULT_BNB_CHAIN_ID,
         timeout_seconds: int = 30,
     ) -> None:
-        self.api_key = api_key or os.getenv("ETHERSCAN_API_KEY")
+        self.api_key = api_key or get_etherscan_api_key(required=False)
         self.api_url = api_url
         self.chain_id = chain_id
         self.timeout_seconds = timeout_seconds

@@ -121,7 +121,34 @@ The fixture is small enough to inspect by hand and is validated by unit tests be
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+cp .env.example .env
 python -m unittest discover -s tests
+```
+
+## Environment Setup
+
+Create a local `.env` file before running real ingestion:
+
+```bash
+cp .env.example .env
+```
+
+Required variables:
+
+- `ENV`: local environment label such as `dev` or `prod`
+- `HELIUS_API_KEY`: required for Solana ingestion unless you set `SOLANA_RPC_URL`
+- `ETHERSCAN_API_KEY`: required for the current BNB/EVM ingestion flow
+
+Optional variables:
+
+- `SOLANA_RPC_URL`: explicit Solana RPC override if you do not want to derive it from `HELIUS_API_KEY`
+- `EVM_RPC_URL`: reserved for future direct EVM RPC ingestion
+
+Example ingestion usage after configuring `.env`:
+
+```bash
+cp .env.example .env
+python scripts/fetch_from_wallet_manifest.py
 ```
 
 ## Current Limitations

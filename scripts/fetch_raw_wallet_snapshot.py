@@ -54,13 +54,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rpc-url",
-        default=SolanaRpcClient().rpc_url,
-        help="Solana RPC URL to use.",
+        default=None,
+        help=(
+            "Optional Solana RPC URL override. If omitted, use SOLANA_RPC_URL or "
+            "HELIUS_API_KEY from the environment."
+        ),
     )
     parser.add_argument(
         "--api-key",
         default=None,
-        help="Optional Etherscan V2 API key for BNB/EVM fetches.",
+        help=(
+            "Optional Etherscan V2 API key override. If omitted, use "
+            "ETHERSCAN_API_KEY from the environment."
+        ),
     )
     parser.add_argument(
         "--copy-solana-payload-fixtures",
