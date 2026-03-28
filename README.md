@@ -40,7 +40,7 @@ wallet-trading-audit/
 
 ## Canonical Transaction Schema
 
-The minimum normalized transaction record is defined in [src/normalize/schema.py](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/normalize/schema.py).
+The minimum normalized transaction record is defined in [src/normalize/schema.py](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/normalize/schema.py). Field definitions are captured explicitly in `CANONICAL_TRANSACTION_SCHEMA`, and the typed record is represented by `NormalizedTransaction`.
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -60,8 +60,34 @@ The minimum normalized transaction record is defined in [src/normalize/schema.py
 
 Notes:
 
+- The schema uses wallet-relative directionality. `token_in_address` and `amount_in` refer to the asset entering the analyzed wallet, while `token_out_address` and `amount_out` refer to the asset leaving it.
 - The schema requires the columns to exist even when an event is one-sided. In those cases, the missing token leg stays `null` and the corresponding amount is `0`.
 - Additional deterministic ordering fields may be needed later if a single transaction expands into multiple normalized rows with the same timestamp. That extension is intentionally deferred until raw payloads are available.
+- `TODO` markers are intentional anywhere Solana instruction decoding, EVM log decoding, native-vs-wrapped handling, or protocol naming would otherwise require assumptions.
+
+## Metric Definitions
+
+Metric formulas and implementation placeholders live in [src/analytics/metrics.py](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/src/analytics/metrics.py).
+
+- PnL is split into `realized_pnl`, `unrealized_pnl`, and `net_pnl`.
+- Fees are defined via `total_fees`, with explicit `TODO`s when native-fee USD conversion still needs price data.
+- Trade quality metrics include `win_rate`, `avg_win`, `avg_loss`, `profit_factor`, and `expectancy`.
+- Equity-risk metrics include `max_drawdown`, which is intentionally a placeholder until the project chooses the canonical equity-curve construction.
+- Behavior and execution capture metrics include `reentry_behavior`, `capture_ratio`, and `giveback_ratio`.
+
+## Sample Dataset
+
+A tiny normalized transaction fixture lives at [tests/fixtures/normalized_transactions_sample.csv](/Users/slimeball/Documents/Coding Projects/wallet-trading-audit/tests/fixtures/normalized_transactions_sample.csv).
+
+It intentionally includes:
+
+- Solana and BNB EVM rows
+- buys, partial sells, and full exits
+- one-sided transfer activity
+- a standalone fee event
+- a full exit followed by a re-entry
+
+The fixture is small enough to inspect by hand and is validated by unit tests before future FIFO or analytics logic is added.
 
 ## Module Status
 
@@ -92,10 +118,10 @@ Notes:
 ## Quick Start
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-PYTHONPATH=src python -m unittest discover -s tests
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests
 ```
 
 ## Current Limitations

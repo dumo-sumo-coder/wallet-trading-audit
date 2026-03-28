@@ -21,6 +21,7 @@ class MetricStatus(str, Enum):
     DEFINED = "defined"
     TODO_PRICE_DATA = "todo_price_data"
     TODO_HEURISTIC = "todo_heuristic"
+    TODO_EQUITY_CURVE = "todo_equity_curve"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +50,7 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
         name="realized_pnl",
         category=MetricCategory.CORE,
         formula=(
-            "sum(exit_proceeds_usd - fifo_cost_basis_usd for each closed quantity match)"
+            "sum(exit_proceeds_usd - fifo_cost_basis_usd for each FIFO-matched closed quantity)"
         ),
         required_inputs=("fifo_trade_matches",),
         description="PnL realized from closed FIFO-matched quantities before fees.",
@@ -89,7 +90,8 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
         name="win_rate",
         category=MetricCategory.EXECUTION,
         formula=(
-            "count(closed_trades where trade_pnl_after_fees > 0) / count(closed_trades)"
+            "count(closed_roundtrips where realized_pnl_after_fees > 0) / "
+            "count(closed_roundtrips)"
         ),
         required_inputs=("closed_trade_pnls_after_fees",),
         description="Share of closed roundtrips that finish profitable after fees.",
@@ -136,6 +138,21 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
         description="Expected after-fee PnL per closed trade.",
         implementation_status=MetricStatus.DEFINED,
     ),
+    "max_drawdown": MetricDefinition(
+        name="max_drawdown",
+        category=MetricCategory.EXECUTION,
+        formula=(
+            "max(running_peak_equity_usd_t - equity_usd_t for each ordered equity point t), "
+            "where equity_usd_t = cumulative_realized_pnl_after_fees_t + unrealized_pnl_usd_t"
+        ),
+        required_inputs=("equity_curve_points",),
+        description="Largest peak-to-trough decline in the strategy equity curve.",
+        implementation_status=MetricStatus.TODO_EQUITY_CURVE,
+        notes=(
+            "TODO: decide whether the first shipped version reports mark-to-market drawdown, "
+            "realized-only drawdown, or both."
+        ),
+    ),
     "pnl_by_wallet": MetricDefinition(
         name="pnl_by_wallet",
         category=MetricCategory.BEHAVIOR,
@@ -173,14 +190,17 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
         name="reentry_behavior",
         category=MetricCategory.BEHAVIOR,
         formula=(
-            "for each wallet-token exit, measure time_to_next_entry and "
-            "next_roundtrip_pnl; summarize reentry_count, reentry_rate, "
-            "median_minutes_to_reentry, and reentry_pnl_delta"
+            "for each wallet-token roundtrip exit, find the next subsequent entry in the "
+            "same wallet-token stream; summarize reentry_count, reentry_rate, "
+            "median_minutes_to_reentry, and next_roundtrip_pnl_after_fees"
         ),
         required_inputs=("closed_trades", "subsequent_entries"),
         description="Structured summary of how quickly and how often positions are re-entered.",
         implementation_status=MetricStatus.TODO_HEURISTIC,
-        notes="TODO: define a canonical reentry window and sequence rules.",
+        notes=(
+            "TODO: define the canonical reentry window and whether transfers reset or "
+            "preserve the wallet-token trade sequence."
+        ),
     ),
     "peak_price_after_entry": MetricDefinition(
         name="peak_price_after_entry",
@@ -215,6 +235,7 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
         required_inputs=("realized_trade_pnls_after_fees", "peak_unrealized_pnl"),
         description="How much of the best available open profit was actually captured.",
         implementation_status=MetricStatus.TODO_PRICE_DATA,
+        notes="Uses per-roundtrip peak unrealized PnL rather than wallet-level peak equity.",
     ),
     "giveback_ratio": MetricDefinition(
         name="giveback_ratio",
@@ -226,6 +247,7 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
         required_inputs=("realized_trade_pnls_after_fees", "peak_unrealized_pnl"),
         description="Share of peak open profit given back before exit.",
         implementation_status=MetricStatus.TODO_PRICE_DATA,
+        notes="Equivalent to 1 - capture_ratio when peak_unrealized_pnl is positive.",
     ),
     "roundtrip_flag": MetricDefinition(
         name="roundtrip_flag",

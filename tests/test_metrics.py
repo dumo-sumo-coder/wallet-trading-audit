@@ -27,6 +27,7 @@ class MetricDefinitionTests(unittest.TestCase):
             "avg_loss",
             "profit_factor",
             "expectancy",
+            "max_drawdown",
             "pnl_by_wallet",
             "pnl_by_token",
             "pnl_by_time_of_day",
@@ -49,6 +50,16 @@ class MetricDefinitionTests(unittest.TestCase):
         self.assertEqual(
             METRIC_DEFINITIONS["peak_unrealized_pnl"].implementation_status,
             MetricStatus.TODO_PRICE_DATA,
+        )
+
+    def test_drawdown_and_reentry_placeholders_are_explicit(self) -> None:
+        self.assertEqual(
+            METRIC_DEFINITIONS["max_drawdown"].implementation_status,
+            MetricStatus.TODO_EQUITY_CURVE,
+        )
+        self.assertEqual(
+            METRIC_DEFINITIONS["reentry_behavior"].implementation_status,
+            MetricStatus.TODO_HEURISTIC,
         )
 
 
