@@ -6,6 +6,15 @@ from .metrics import (
     MetricDefinition,
     MetricStatus,
 )
+from .portfolio import (
+    PortfolioAnalysis,
+    PortfolioSummary,
+    PortfolioTokenPosition,
+    PositionClassification,
+    PositionLifecycle,
+    analyze_normalized_portfolio,
+    analyze_portfolio,
+)
 from .performance import (
     ClosedTradePerformance,
     PnlDistributionBucket,
@@ -23,9 +32,16 @@ __all__ = [
     "MetricCategory",
     "MetricDefinition",
     "MetricStatus",
+    "PortfolioAnalysis",
+    "PortfolioSummary",
+    "PortfolioTokenPosition",
+    "PositionClassification",
+    "PositionLifecycle",
     "PnlDistributionBucket",
     "TradePerformanceAnalysis",
     "TradePerformanceSummary",
+    "analyze_normalized_portfolio",
+    "analyze_portfolio",
     "analyze_fifo_pipeline_performance",
     "analyze_fifo_trade_performance",
     "build_closed_trade_performance_rows",
