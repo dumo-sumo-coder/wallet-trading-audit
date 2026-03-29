@@ -260,10 +260,29 @@ class AnalyzeWalletManifestPortfolioScriptTests(unittest.TestCase):
 
             json_path = repository_root / run.portfolio_summary_json_path
             csv_path = repository_root / run.portfolio_summary_csv_path
+            behavior_json_path = repository_root / run.portfolio_behavior_json_path
+            behavior_csv_path = repository_root / run.portfolio_behavior_csv_path
+            simulation_json_path = repository_root / run.portfolio_simulation_json_path
+            simulation_csv_path = repository_root / run.portfolio_simulation_csv_path
+            rules_json_path = repository_root / run.portfolio_rules_json_path
+            rules_markdown_path = repository_root / run.portfolio_rules_markdown_path
             self.assertTrue(json_path.exists())
             self.assertTrue(csv_path.exists())
+            self.assertTrue(behavior_json_path.exists())
+            self.assertTrue(behavior_csv_path.exists())
+            self.assertTrue(simulation_json_path.exists())
+            self.assertTrue(simulation_csv_path.exists())
+            self.assertTrue(rules_json_path.exists())
+            self.assertTrue(rules_markdown_path.exists())
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["report"]["summary"]["aggregate_realized_pnl_usd"], "20.0")
+            behavior_payload = json.loads(behavior_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(behavior_payload["summary"]["included_wallet_count"], 2)
+            self.assertEqual(behavior_payload["summary"]["total_matched_trades"], 2)
+            simulation_payload = json.loads(simulation_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(simulation_payload["included_wallet_count"], 2)
+            rules_payload = json.loads(rules_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(rules_payload["included_wallet_count"], 2)
             with csv_path.open("r", encoding="utf-8", newline="") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(len(rows), 4)

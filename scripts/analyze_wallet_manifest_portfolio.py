@@ -34,7 +34,22 @@ from analytics.manifest_portfolio import (  # noqa: E402
     UnsupportedCasePatternCount,
     build_manifest_portfolio_report,
 )
-from analytics.trade_diagnostics import TokenPnlDiagnostic  # noqa: E402
+from analytics.portfolio_subset_diagnostics import (  # noqa: E402
+    PortfolioSubsetBehaviorReport,
+    PortfolioSubsetRulesReport,
+    PortfolioSubsetSimulationReport,
+    build_portfolio_subset_behavior_report,
+    build_portfolio_subset_rules_report,
+    build_portfolio_subset_simulation_report,
+    prepare_portfolio_subset_wallet_diagnostics,
+    render_portfolio_subset_rules_markdown,
+)
+from analytics.trade_diagnostics import (  # noqa: E402
+    MatchedTradeDiagnostic,
+    TokenPnlDiagnostic,
+    TradeDiagnosticReport,
+    summarize_trade_diagnostic_report,
+)
 from config import get_manual_env_load_instructions  # noqa: E402
 from ingestion.manifest import (  # noqa: E402
     DEFAULT_WALLET_MANIFEST_PATH,
@@ -61,6 +76,12 @@ class ManifestPortfolioRun:
     manifest_path: str
     portfolio_summary_json_path: str
     portfolio_summary_csv_path: str
+    portfolio_behavior_json_path: str
+    portfolio_behavior_csv_path: str
+    portfolio_simulation_json_path: str
+    portfolio_simulation_csv_path: str
+    portfolio_rules_json_path: str
+    portfolio_rules_markdown_path: str
     filters: dict[str, object]
     report: ManifestPortfolioReport
 
@@ -208,6 +229,12 @@ def analyze_wallet_manifest_portfolio(
     timestamp_token = generated_at.strftime("%Y%m%dT%H%M%SZ")
     json_path = output_dir / f"manifest_portfolio_{timestamp_token}.json"
     csv_path = output_dir / f"manifest_portfolio_{timestamp_token}.csv"
+    behavior_json_path = output_dir / f"manifest_portfolio_{timestamp_token}_behavior_report.json"
+    behavior_csv_path = output_dir / f"manifest_portfolio_{timestamp_token}_behavior_report.csv"
+    simulation_json_path = output_dir / f"manifest_portfolio_{timestamp_token}_simulation_report.json"
+    simulation_csv_path = output_dir / f"manifest_portfolio_{timestamp_token}_simulation_report.csv"
+    rules_json_path = output_dir / f"manifest_portfolio_{timestamp_token}_rules_report.json"
+    rules_markdown_path = output_dir / f"manifest_portfolio_{timestamp_token}_rules_report.md"
     _write_manifest_portfolio_report(
         report,
         json_path=json_path,
@@ -227,11 +254,57 @@ def analyze_wallet_manifest_portfolio(
             "refetch_existing": refetch_existing,
         },
     )
+    included_wallet_diagnostics = _load_included_wallet_diagnostics(
+        report.wallet_summaries,
+        repository_root=repository_root,
+    )
+    portfolio_behavior_report = build_portfolio_subset_behavior_report(
+        included_wallet_diagnostics,
+        portfolio_report=report,
+    )
+    portfolio_simulation_report = build_portfolio_subset_simulation_report(
+        included_wallet_diagnostics,
+    )
+    portfolio_rules_report = build_portfolio_subset_rules_report(
+        included_wallet_diagnostics,
+        portfolio_behavior_report=portfolio_behavior_report,
+        portfolio_simulation_report=portfolio_simulation_report,
+    )
+    _write_portfolio_subset_behavior_report(
+        portfolio_behavior_report,
+        json_path=behavior_json_path,
+        csv_path=behavior_csv_path,
+    )
+    _write_portfolio_subset_simulation_report(
+        portfolio_simulation_report,
+        json_path=simulation_json_path,
+        csv_path=simulation_csv_path,
+    )
+    _write_portfolio_subset_rules_report(
+        portfolio_rules_report,
+        json_path=rules_json_path,
+        markdown_path=rules_markdown_path,
+    )
 
     return ManifestPortfolioRun(
         manifest_path=_relative_path_text(manifest_path, repository_root),
         portfolio_summary_json_path=_relative_path_text(json_path, repository_root),
         portfolio_summary_csv_path=_relative_path_text(csv_path, repository_root),
+        portfolio_behavior_json_path=_relative_path_text(behavior_json_path, repository_root),
+        portfolio_behavior_csv_path=_relative_path_text(behavior_csv_path, repository_root),
+        portfolio_simulation_json_path=_relative_path_text(
+            simulation_json_path,
+            repository_root,
+        ),
+        portfolio_simulation_csv_path=_relative_path_text(
+            simulation_csv_path,
+            repository_root,
+        ),
+        portfolio_rules_json_path=_relative_path_text(rules_json_path, repository_root),
+        portfolio_rules_markdown_path=_relative_path_text(
+            rules_markdown_path,
+            repository_root,
+        ),
         filters={
             "chain": chain,
             "label_filter": label_filter,
@@ -279,6 +352,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Manifest: {run.manifest_path}")
     print(f"Portfolio summary JSON: {run.portfolio_summary_json_path}")
     print(f"Portfolio summary CSV: {run.portfolio_summary_csv_path}")
+    print(f"Portfolio behavior JSON: {run.portfolio_behavior_json_path}")
+    print(f"Portfolio behavior CSV: {run.portfolio_behavior_csv_path}")
+    print(f"Portfolio simulation JSON: {run.portfolio_simulation_json_path}")
+    print(f"Portfolio simulation CSV: {run.portfolio_simulation_csv_path}")
+    print(f"Portfolio rules JSON: {run.portfolio_rules_json_path}")
+    print(f"Portfolio rules Markdown: {run.portfolio_rules_markdown_path}")
     print(f"Wallets analyzed: {run.report.summary.analyzed_wallet_count}")
     print(f"Wallets included in aggregate: {run.report.summary.included_wallet_count}")
     print(f"Aggregate realized PnL: {run.report.summary.aggregate_realized_pnl_usd}")
@@ -822,6 +901,229 @@ def _write_manifest_portfolio_report(
     return json_path, csv_path
 
 
+def _load_included_wallet_diagnostics(
+    wallet_summaries: Sequence[PortfolioWalletSummary],
+    *,
+    repository_root: Path,
+) -> tuple[object, ...]:
+    included_wallet_diagnostics = []
+    for wallet_summary in wallet_summaries:
+        if not wallet_summary.included_in_aggregate:
+            continue
+        if wallet_summary.analysis_summary_path is None:
+            continue
+        analysis_summary_path = _resolve_repository_relative_path(
+            wallet_summary.analysis_summary_path,
+            repository_root=repository_root,
+        )
+        trade_report_path = _analysis_summary_to_sibling_path(
+            analysis_summary_path,
+            "_trade_report.json",
+        )
+        trade_report = _load_trade_diagnostic_report(trade_report_path)
+        included_wallet_diagnostics.append(
+            prepare_portfolio_subset_wallet_diagnostics(
+                wallet=wallet_summary.wallet,
+                label=wallet_summary.label,
+                group=wallet_summary.group,
+                trade_report=trade_report,
+            )
+        )
+    return tuple(included_wallet_diagnostics)
+
+
+def _analysis_summary_to_sibling_path(
+    analysis_summary_path: Path,
+    suffix: str,
+) -> Path:
+    marker = "_analysis_summary.json"
+    if not analysis_summary_path.name.endswith(marker):
+        raise ValueError(
+            "Analysis summary path does not follow the expected '*_analysis_summary.json' pattern: "
+            f"{analysis_summary_path}"
+        )
+    stem = analysis_summary_path.name[: -len(marker)]
+    return analysis_summary_path.with_name(f"{stem}{suffix}")
+
+
+def _load_trade_diagnostic_report(path: Path) -> TradeDiagnosticReport:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    matched_trades_payload = payload.get("matched_trades")
+    if not isinstance(matched_trades_payload, list):
+        raise ValueError(f"Trade report is missing a 'matched_trades' list: {path}")
+    matched_trades = tuple(
+        _parse_matched_trade(row, path=path)
+        for row in matched_trades_payload
+    )
+    return TradeDiagnosticReport(
+        matched_trades=matched_trades,
+        summary=summarize_trade_diagnostic_report(matched_trades),
+    )
+
+
+def _parse_matched_trade(
+    row: object,
+    *,
+    path: Path,
+) -> MatchedTradeDiagnostic:
+    if not isinstance(row, Mapping):
+        raise ValueError(f"Trade report rows must be objects: {path}")
+    try:
+        return MatchedTradeDiagnostic(
+            token_address=_require_text(row, "token_address"),
+            opening_tx_hash=_require_text(row, "opening_tx_hash"),
+            closing_tx_hash=_require_text(row, "closing_tx_hash"),
+            open_timestamp=datetime.fromisoformat(_require_text(row, "open_timestamp")),
+            close_timestamp=datetime.fromisoformat(_require_text(row, "close_timestamp")),
+            holding_duration_seconds=_require_int(row, "holding_duration_seconds"),
+            quantity_matched=_require_decimal(row, "quantity_matched"),
+            cost_basis_usd=_optional_decimal(row.get("cost_basis_usd")),
+            proceeds_usd=_optional_decimal(row.get("proceeds_usd")),
+            realized_pnl_usd=_optional_decimal(row.get("realized_pnl_usd")),
+            opening_fee_native=_optional_decimal(row.get("opening_fee_native")),
+            opening_fee_usd=_optional_decimal(row.get("opening_fee_usd")),
+            closing_fee_native=_optional_decimal(row.get("closing_fee_native")),
+            closing_fee_usd=_optional_decimal(row.get("closing_fee_usd")),
+        )
+    except ValueError as exc:
+        raise ValueError(f"Invalid matched trade row in {path}: {exc}") from exc
+
+
+def _write_portfolio_subset_behavior_report(
+    report: PortfolioSubsetBehaviorReport,
+    *,
+    json_path: Path,
+    csv_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=(
+                "wallet",
+                "label",
+                "group",
+                "token_address",
+                "opening_tx_hash",
+                "closing_tx_hash",
+                "open_timestamp",
+                "close_timestamp",
+                "close_day",
+                "holding_duration_seconds",
+                "holding_time_bucket",
+                "quantity_matched",
+                "cost_basis_usd",
+                "cost_basis_bucket",
+                "proceeds_usd",
+                "realized_pnl_usd",
+                "outcome",
+                "prior_trade_outcome",
+            ),
+        )
+        writer.writeheader()
+        for trade_row in report.trade_rows:
+            writer.writerow(
+                {
+                    "wallet": trade_row.wallet,
+                    "label": trade_row.label,
+                    "group": trade_row.group or "",
+                    "token_address": trade_row.token_address,
+                    "opening_tx_hash": trade_row.opening_tx_hash,
+                    "closing_tx_hash": trade_row.closing_tx_hash,
+                    "open_timestamp": trade_row.open_timestamp.isoformat(),
+                    "close_timestamp": trade_row.close_timestamp.isoformat(),
+                    "close_day": trade_row.close_day,
+                    "holding_duration_seconds": trade_row.holding_duration_seconds,
+                    "holding_time_bucket": trade_row.holding_time_bucket,
+                    "quantity_matched": str(trade_row.quantity_matched),
+                    "cost_basis_usd": _csv_value(trade_row.cost_basis_usd),
+                    "cost_basis_bucket": trade_row.cost_basis_bucket,
+                    "proceeds_usd": _csv_value(trade_row.proceeds_usd),
+                    "realized_pnl_usd": _csv_value(trade_row.realized_pnl_usd),
+                    "outcome": trade_row.outcome,
+                    "prior_trade_outcome": trade_row.prior_trade_outcome or "",
+                }
+            )
+
+    return json_path, csv_path
+
+
+def _write_portfolio_subset_simulation_report(
+    report: PortfolioSubsetSimulationReport,
+    *,
+    json_path: Path,
+    csv_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=(
+                "scenario_name",
+                "rule_type",
+                "threshold_value",
+                "original_trade_count",
+                "remaining_trade_count",
+                "filtered_out_trade_count",
+                "original_realized_pnl_usd",
+                "filtered_out_realized_pnl_usd",
+                "new_realized_pnl_usd",
+                "delta_vs_original_pnl_usd",
+                "excluded_tokens",
+            ),
+        )
+        writer.writeheader()
+        for scenario_result in report.summary.scenario_results:
+            writer.writerow(
+                {
+                    "scenario_name": scenario_result.scenario_name,
+                    "rule_type": scenario_result.rule_type,
+                    "threshold_value": _csv_value(scenario_result.threshold_value),
+                    "original_trade_count": scenario_result.original_trade_count,
+                    "remaining_trade_count": scenario_result.remaining_trade_count,
+                    "filtered_out_trade_count": scenario_result.filtered_out_trade_count,
+                    "original_realized_pnl_usd": str(
+                        scenario_result.original_realized_pnl_usd
+                    ),
+                    "filtered_out_realized_pnl_usd": str(
+                        scenario_result.filtered_out_realized_pnl_usd
+                    ),
+                    "new_realized_pnl_usd": str(scenario_result.new_realized_pnl_usd),
+                    "delta_vs_original_pnl_usd": str(
+                        scenario_result.delta_vs_original_pnl_usd
+                    ),
+                    "excluded_tokens": ",".join(scenario_result.excluded_tokens),
+                }
+            )
+
+    return json_path, csv_path
+
+
+def _write_portfolio_subset_rules_report(
+    report: PortfolioSubsetRulesReport,
+    *,
+    json_path: Path,
+    markdown_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+    markdown_path.write_text(
+        render_portfolio_subset_rules_markdown(report),
+        encoding="utf-8",
+    )
+    return json_path, markdown_path
+
+
 def _timestamp_from_artifact_path(path: Path) -> datetime | None:
     match = TIMESTAMP_TOKEN_PATTERN.search(path.stem)
     if match is None:
@@ -905,6 +1207,45 @@ def _relative_path_text(path: Path, repository_root: Path) -> str:
         return path.relative_to(repository_root).as_posix()
     except ValueError:
         return str(path)
+
+
+def _resolve_repository_relative_path(path_text: str, *, repository_root: Path) -> Path:
+    path = Path(path_text)
+    if path.is_absolute():
+        return path
+    return repository_root / path
+
+
+def _require_text(payload: Mapping[str, object], field_name: str) -> str:
+    value = payload.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Missing required text field '{field_name}'")
+    return value
+
+
+def _require_int(payload: Mapping[str, object], field_name: str) -> int:
+    value = payload.get(field_name)
+    if not isinstance(value, int):
+        raise ValueError(f"Missing required integer field '{field_name}'")
+    return value
+
+
+def _require_decimal(payload: Mapping[str, object], field_name: str) -> Decimal:
+    value = payload.get(field_name)
+    decimal_value = _optional_decimal(value)
+    if decimal_value is None:
+        raise ValueError(f"Missing required decimal field '{field_name}'")
+    return decimal_value
+
+
+def _optional_decimal(value: object) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float, str)):
+        return Decimal(str(value))
+    raise ValueError(f"Expected a decimal-compatible value, got {type(value).__name__}")
 
 
 def _jsonify(value: Any) -> Any:
