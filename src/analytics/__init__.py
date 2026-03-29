@@ -46,6 +46,13 @@ from .trade_filter_simulation import (
     build_trade_filter_simulation_report,
     default_trade_filter_scenarios,
 )
+from .rules_report import (
+    CandidateRuleRecommendation,
+    LeakPatternRecommendation,
+    WalletRulesReport,
+    build_wallet_rules_report,
+    render_wallet_rules_markdown,
+)
 from .wallet_behavior import (
     BehaviorTradeRow,
     ConcentrationDiagnostics,
@@ -99,6 +106,11 @@ __all__ = [
     "build_default_trade_filter_simulation_report",
     "build_trade_filter_simulation_report",
     "default_trade_filter_scenarios",
+    "CandidateRuleRecommendation",
+    "LeakPatternRecommendation",
+    "WalletRulesReport",
+    "build_wallet_rules_report",
+    "render_wallet_rules_markdown",
     "BehaviorTradeRow",
     "ConcentrationDiagnostics",
     "CostBasisBucketDiagnostic",

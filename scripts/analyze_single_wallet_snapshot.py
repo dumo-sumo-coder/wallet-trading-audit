@@ -29,6 +29,11 @@ from analytics.trade_filter_simulation import (  # noqa: E402
     TradeFilterSimulationSummary,
     build_default_trade_filter_simulation_report,
 )
+from analytics.rules_report import (  # noqa: E402
+    WalletRulesReport,
+    build_wallet_rules_report,
+    render_wallet_rules_markdown,
+)
 from analytics.wallet_behavior import (  # noqa: E402
     WalletBehaviorReport,
     WalletBehaviorSummary,
@@ -114,6 +119,13 @@ class SimulationDiagnosticArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
+class RulesDiagnosticArtifacts:
+    rules_report_json_path: str
+    rules_report_markdown_path: str
+    report_summary: WalletRulesReport
+
+
+@dataclass(frozen=True, slots=True)
 class SingleWalletSnapshotAnalysis:
     snapshot_path: str
     summary_path: str
@@ -129,6 +141,7 @@ class SingleWalletSnapshotAnalysis:
     trade_diagnostics: TradeDiagnosticArtifacts
     behavior_diagnostics: BehaviorDiagnosticArtifacts
     simulation_diagnostics: SimulationDiagnosticArtifacts
+    rules_diagnostics: RulesDiagnosticArtifacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +156,7 @@ class _SnapshotAnalysisComputation:
     trade_report: TradeDiagnosticReport
     behavior_report: WalletBehaviorReport
     simulation_report: TradeFilterSimulationReport
+    rules_report: WalletRulesReport
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -231,6 +245,11 @@ def analyze_fetch_metadata_path(
         json_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_simulation_report.json"),
         csv_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_simulation_report.csv"),
     )
+    write_rules_diagnostic_report(
+        computation.rules_report,
+        json_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_rules_report.json"),
+        markdown_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_rules_report.md"),
+    )
     return analysis
 
 
@@ -261,6 +280,11 @@ def analyze_snapshot_path(
         computation.simulation_report,
         json_path=snapshot_path.with_name(f"{snapshot_path.stem}_simulation_report.json"),
         csv_path=snapshot_path.with_name(f"{snapshot_path.stem}_simulation_report.csv"),
+    )
+    write_rules_diagnostic_report(
+        computation.rules_report,
+        json_path=snapshot_path.with_name(f"{snapshot_path.stem}_rules_report.json"),
+        markdown_path=snapshot_path.with_name(f"{snapshot_path.stem}_rules_report.md"),
     )
     return analysis
 
@@ -443,6 +467,10 @@ def _analyze_snapshot_mapping_with_report(
     simulation_report = build_default_trade_filter_simulation_report(
         trade_report.matched_trades
     )
+    rules_report = build_wallet_rules_report(
+        behavior_report.summary,
+        simulation_report.summary,
+    )
 
     return _SnapshotAnalysisComputation(
         analysis=SingleWalletSnapshotAnalysis(
@@ -486,10 +514,20 @@ def _analyze_snapshot_mapping_with_report(
                 ),
                 report_summary=simulation_report.summary,
             ),
+            rules_diagnostics=RulesDiagnosticArtifacts(
+                rules_report_json_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_rules_report.json")
+                ),
+                rules_report_markdown_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_rules_report.md")
+                ),
+                report_summary=rules_report,
+            ),
         ),
         trade_report=trade_report,
         behavior_report=behavior_report,
         simulation_report=simulation_report,
+        rules_report=rules_report,
     )
 
 
@@ -672,6 +710,23 @@ def write_simulation_diagnostic_report(
     return json_path, csv_path
 
 
+def write_rules_diagnostic_report(
+    report: WalletRulesReport,
+    *,
+    json_path: Path,
+    markdown_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+    markdown_path.write_text(
+        render_wallet_rules_markdown(report),
+        encoding="utf-8",
+    )
+    return json_path, markdown_path
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -809,6 +864,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         "Best improvement new realized PnL: "
         f"{simulation_diagnostics.report_summary.best_improvement_new_realized_pnl_usd}"
     )
+    rules_diagnostics = analysis.rules_diagnostics
+    print(f"Rules report JSON: {rules_diagnostics.rules_report_json_path}")
+    print(f"Rules report Markdown: {rules_diagnostics.rules_report_markdown_path}")
+    print("Top leak patterns:")
+    if not rules_diagnostics.report_summary.top_leak_patterns:
+        print("  none")
+    else:
+        for item in rules_diagnostics.report_summary.top_leak_patterns:
+            print(
+                f"  {item.rank}. {item.title} "
+                f"({item.category}, estimated drag {item.estimated_pnl_drag_usd})"
+            )
+    print("Top candidate rules:")
+    if not rules_diagnostics.report_summary.top_candidate_rules:
+        print("  none")
+    else:
+        for item in rules_diagnostics.report_summary.top_candidate_rules:
+            print(
+                f"  {item.rank}. {item.title} "
+                f"({item.category}, +{item.estimated_pnl_improvement_usd})"
+            )
+    if rules_diagnostics.report_summary.next_test_rule_categories:
+        print("Explore next:")
+        for item in rules_diagnostics.report_summary.next_test_rule_categories:
+            print(f"  {item}")
     return 0
 
 

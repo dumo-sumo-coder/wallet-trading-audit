@@ -244,6 +244,19 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
             with simulation_report_csv_path.open("r", encoding="utf-8", newline="") as handle:
                 simulation_rows = list(csv.DictReader(handle))
             self.assertGreater(len(simulation_rows), 0)
+            rules_report_json_path = ROOT / analysis.rules_diagnostics.rules_report_json_path
+            rules_report_markdown_path = ROOT / analysis.rules_diagnostics.rules_report_markdown_path
+            self.assertTrue(rules_report_json_path.exists())
+            self.assertTrue(rules_report_markdown_path.exists())
+            rules_report_payload = json.loads(
+                rules_report_json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(rules_report_payload["original_realized_pnl_usd"], "50")
+            self.assertEqual(rules_report_payload["top_candidate_rules"], [])
+            self.assertIn(
+                "Wallet Rules Coaching Report",
+                rules_report_markdown_path.read_text(encoding="utf-8"),
+            )
 
         self.assertEqual(analysis.total_raw_transactions, 2)
         self.assertEqual(analysis.normalized_transactions_count, 2)
@@ -275,6 +288,13 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(analysis.trade_diagnostics.report_summary.total_matched_trades, 0)
         self.assertEqual(analysis.behavior_diagnostics.report_summary.total_matched_trades, 0)
         self.assertEqual(analysis.simulation_diagnostics.report_summary.original_trade_count, 0)
+        self.assertEqual(analysis.rules_diagnostics.report_summary.top_candidate_rules, ())
+        self.assertTrue(
+            any(
+                "one wallet" in item or "overfit" in item
+                for item in analysis.rules_diagnostics.report_summary.caution_notes
+            )
+        )
 
     def test_analyze_snapshot_applies_local_trusted_valuations_and_enables_fifo(self) -> None:
         buy = load_json_fixture("solana_transaction_response_buy_example.json")
@@ -371,6 +391,15 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
                 len(simulation_report_payload["summary"]["scenario_results"]),
                 0,
             )
+            rules_report_json_path = temp_path / "wallet_snapshot_20260329T030000Z_rules_report.json"
+            rules_report_markdown_path = temp_path / "wallet_snapshot_20260329T030000Z_rules_report.md"
+            self.assertTrue(rules_report_json_path.exists())
+            self.assertTrue(rules_report_markdown_path.exists())
+            rules_report_payload = json.loads(
+                rules_report_json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(rules_report_payload["original_realized_pnl_usd"], "50")
+            self.assertEqual(rules_report_payload["top_candidate_rules"], [])
 
         self.assertEqual(
             analysis.valuation_summary.local_trusted_valuation_records_count,
@@ -498,6 +527,7 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(saved_summary["normalized_transactions_count"], 1)
         self.assertEqual(saved_summary["unsupported_transactions_count"], 0)
         self.assertEqual(saved_summary["valuation_summary"]["rows_requiring_valuation_before_count"], 0)
+        self.assertIn("rules_diagnostics", saved_summary)
 
 
 if __name__ == "__main__":
