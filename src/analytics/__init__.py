@@ -33,6 +33,21 @@ from .trade_diagnostics import (
     build_trade_diagnostic_report,
     summarize_trade_diagnostic_report,
 )
+from .wallet_behavior import (
+    BehaviorTradeRow,
+    ConcentrationDiagnostics,
+    CostBasisBucketDiagnostic,
+    DailyBehaviorDiagnostic,
+    FastRotationDiagnostic,
+    HoldingTimeBucketDiagnostic,
+    NotionalDiagnostics,
+    StreakDiagnostics,
+    TokenConcentrationDiagnostic,
+    WalletBehaviorReport,
+    WalletBehaviorSummary,
+    build_wallet_behavior_report,
+    summarize_wallet_behavior,
+)
 
 __all__ = [
     "ClosedTradePerformance",
@@ -60,4 +75,17 @@ __all__ = [
     "TradeDiagnosticSummary",
     "build_trade_diagnostic_report",
     "summarize_trade_diagnostic_report",
+    "BehaviorTradeRow",
+    "ConcentrationDiagnostics",
+    "CostBasisBucketDiagnostic",
+    "DailyBehaviorDiagnostic",
+    "FastRotationDiagnostic",
+    "HoldingTimeBucketDiagnostic",
+    "NotionalDiagnostics",
+    "StreakDiagnostics",
+    "TokenConcentrationDiagnostic",
+    "WalletBehaviorReport",
+    "WalletBehaviorSummary",
+    "build_wallet_behavior_report",
+    "summarize_wallet_behavior",
 ]

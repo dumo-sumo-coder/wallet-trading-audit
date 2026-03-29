@@ -24,6 +24,11 @@ from analytics.trade_diagnostics import (  # noqa: E402
     TradeDiagnosticSummary,
     build_trade_diagnostic_report,
 )
+from analytics.wallet_behavior import (  # noqa: E402
+    WalletBehaviorReport,
+    WalletBehaviorSummary,
+    build_wallet_behavior_report,
+)
 from normalize.schema import EventType, NormalizedTransaction  # noqa: E402
 from normalize.transactions import SOLANA_WRAPPED_SOL_MINT, normalize_transaction  # noqa: E402
 from pnl.fifo_engine import InsufficientInventoryError  # noqa: E402
@@ -90,6 +95,13 @@ class TradeDiagnosticArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
+class BehaviorDiagnosticArtifacts:
+    behavior_report_json_path: str
+    behavior_report_csv_path: str
+    report_summary: WalletBehaviorSummary
+
+
+@dataclass(frozen=True, slots=True)
 class SingleWalletSnapshotAnalysis:
     snapshot_path: str
     summary_path: str
@@ -103,6 +115,7 @@ class SingleWalletSnapshotAnalysis:
     valuation_summary: SnapshotValuationSummary
     fifo_summary: FifoCoverageSummary
     trade_diagnostics: TradeDiagnosticArtifacts
+    behavior_diagnostics: BehaviorDiagnosticArtifacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +128,7 @@ class _FifoCoverageComputation:
 class _SnapshotAnalysisComputation:
     analysis: SingleWalletSnapshotAnalysis
     trade_report: TradeDiagnosticReport
+    behavior_report: WalletBehaviorReport
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -193,6 +207,11 @@ def analyze_fetch_metadata_path(
         json_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_trade_report.json"),
         csv_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_trade_report.csv"),
     )
+    write_behavior_diagnostic_report(
+        computation.behavior_report,
+        json_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_behavior_report.json"),
+        csv_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_behavior_report.csv"),
+    )
     return analysis
 
 
@@ -213,6 +232,11 @@ def analyze_snapshot_path(
         computation.trade_report,
         json_path=snapshot_path.with_name(f"{snapshot_path.stem}_trade_report.json"),
         csv_path=snapshot_path.with_name(f"{snapshot_path.stem}_trade_report.csv"),
+    )
+    write_behavior_diagnostic_report(
+        computation.behavior_report,
+        json_path=snapshot_path.with_name(f"{snapshot_path.stem}_behavior_report.json"),
+        csv_path=snapshot_path.with_name(f"{snapshot_path.stem}_behavior_report.csv"),
     )
     return analysis
 
@@ -391,6 +415,7 @@ def _analyze_snapshot_mapping_with_report(
             ),
         )
     )
+    behavior_report = build_wallet_behavior_report(trade_report.matched_trades)
 
     return _SnapshotAnalysisComputation(
         analysis=SingleWalletSnapshotAnalysis(
@@ -416,8 +441,18 @@ def _analyze_snapshot_mapping_with_report(
                 ),
                 report_summary=trade_report.summary,
             ),
+            behavior_diagnostics=BehaviorDiagnosticArtifacts(
+                behavior_report_json_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_behavior_report.json")
+                ),
+                behavior_report_csv_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_behavior_report.csv")
+                ),
+                report_summary=behavior_report.summary,
+            ),
         ),
         trade_report=trade_report,
+        behavior_report=behavior_report,
     )
 
 
@@ -482,6 +517,63 @@ def write_trade_diagnostic_report(
                     "opening_fee_usd": _csv_value(matched_trade.opening_fee_usd),
                     "closing_fee_native": _csv_value(matched_trade.closing_fee_native),
                     "closing_fee_usd": _csv_value(matched_trade.closing_fee_usd),
+                }
+            )
+
+    return json_path, csv_path
+
+
+def write_behavior_diagnostic_report(
+    report: WalletBehaviorReport,
+    *,
+    json_path: Path,
+    csv_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=(
+                "token_address",
+                "opening_tx_hash",
+                "closing_tx_hash",
+                "open_timestamp",
+                "close_timestamp",
+                "close_day",
+                "holding_duration_seconds",
+                "holding_time_bucket",
+                "quantity_matched",
+                "cost_basis_usd",
+                "cost_basis_bucket",
+                "proceeds_usd",
+                "realized_pnl_usd",
+                "outcome",
+                "prior_trade_outcome",
+            ),
+        )
+        writer.writeheader()
+        for trade_row in report.trade_rows:
+            writer.writerow(
+                {
+                    "token_address": trade_row.token_address,
+                    "opening_tx_hash": trade_row.opening_tx_hash,
+                    "closing_tx_hash": trade_row.closing_tx_hash,
+                    "open_timestamp": trade_row.open_timestamp.isoformat(),
+                    "close_timestamp": trade_row.close_timestamp.isoformat(),
+                    "close_day": trade_row.close_day,
+                    "holding_duration_seconds": trade_row.holding_duration_seconds,
+                    "holding_time_bucket": trade_row.holding_time_bucket,
+                    "quantity_matched": str(trade_row.quantity_matched),
+                    "cost_basis_usd": _csv_value(trade_row.cost_basis_usd),
+                    "cost_basis_bucket": trade_row.cost_basis_bucket,
+                    "proceeds_usd": _csv_value(trade_row.proceeds_usd),
+                    "realized_pnl_usd": _csv_value(trade_row.realized_pnl_usd),
+                    "outcome": trade_row.outcome,
+                    "prior_trade_outcome": trade_row.prior_trade_outcome or "",
                 }
             )
 
@@ -588,6 +680,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"  {item.token_address}: "
                 f"{item.realized_pnl_usd} across {item.matched_trades} matched trades"
             )
+    behavior_diagnostics = analysis.behavior_diagnostics
+    print(f"Behavior report JSON: {behavior_diagnostics.behavior_report_json_path}")
+    print(f"Behavior report CSV: {behavior_diagnostics.behavior_report_csv_path}")
+    print(
+        "Longest losing streak: "
+        f"{behavior_diagnostics.report_summary.streak_diagnostics.longest_losing_streak}"
+    )
+    print(
+        "Average cost basis: "
+        f"{behavior_diagnostics.report_summary.notional_diagnostics.average_cost_basis_usd}"
+    )
+    print("PnL by holding-time bucket:")
+    for bucket in behavior_diagnostics.report_summary.holding_time_buckets:
+        print(
+            f"  {bucket.bucket}: {bucket.total_pnl_usd} "
+            f"across {bucket.trade_count} trades"
+        )
+    top_loss_concentration = (
+        behavior_diagnostics.report_summary.concentration_diagnostics
+        .top_5_losing_tokens_contribution_pct
+    )
+    print(f"Top loss concentration: {top_loss_concentration}")
     return 0
 
 
