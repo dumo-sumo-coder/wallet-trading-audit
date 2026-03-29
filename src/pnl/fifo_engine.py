@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import DefaultDict, Sequence
 
 from normalize.schema import EventType, NormalizedTransaction
+from normalize.transactions import SOLANA_WRAPPED_SOL_MINT
 
 from .fifo import InventoryLot, TradeMatch
 
@@ -38,6 +39,19 @@ class FifoEngineResult:
     recorded_fees: tuple[RecordedFee, ...]
 
 
+class InsufficientInventoryError(ValueError):
+    """Raised when a disposal row has no matching opening inventory."""
+
+    def __init__(self, *, wallet: str, token_address: str, tx_hash: str) -> None:
+        self.wallet = wallet
+        self.token_address = token_address
+        self.tx_hash = tx_hash
+        super().__init__(
+            "Insufficient inventory for FIFO disposal: "
+            f"{wallet} {token_address} {tx_hash}"
+        )
+
+
 @dataclass(slots=True)
 class _OpenLot:
     wallet: str
@@ -62,6 +76,8 @@ class FifoEngine:
       linkage rules are defined.
     - Support token-to-token rotations that both close one asset and open the
       acquired asset in the same normalized row.
+    - Broaden quote-currency handling beyond wrapped-SOL swap rows only after
+      fixture-driven review confirms the right accounting model.
     - Add a dedicated rounding policy if downstream reports require quantized
       currency outputs instead of exact `Decimal` math.
     """
@@ -160,6 +176,10 @@ class FifoEngine:
         transaction: NormalizedTransaction,
         lots_by_wallet_token: DefaultDict[tuple[str, str], list[_OpenLot]],
     ) -> str:
+        wrapped_sol_action = _classify_wrapped_sol_swap(transaction)
+        if wrapped_sol_action is not None:
+            return wrapped_sol_action
+
         has_inflow = transaction.token_in_address is not None and transaction.amount_in > ZERO
         has_outflow = (
             transaction.token_out_address is not None and transaction.amount_out > ZERO
@@ -233,9 +253,10 @@ class FifoEngine:
 
         while remaining_quantity > ZERO:
             if not open_lots:
-                raise ValueError(
-                    "Insufficient inventory for FIFO disposal: "
-                    f"{transaction.wallet} {transaction.token_out_address} {transaction.tx_hash}"
+                raise InsufficientInventoryError(
+                    wallet=transaction.wallet,
+                    token_address=transaction.token_out_address,
+                    tx_hash=transaction.tx_hash,
                 )
 
             lot = open_lots[0]
@@ -265,3 +286,23 @@ class FifoEngine:
                 open_lots.pop(0)
 
         return matches
+
+
+def _classify_wrapped_sol_swap(
+    transaction: NormalizedTransaction,
+) -> str | None:
+    token_in_address = transaction.token_in_address
+    token_out_address = transaction.token_out_address
+    if (
+        token_in_address == SOLANA_WRAPPED_SOL_MINT
+        and token_out_address is not None
+        and token_out_address != SOLANA_WRAPPED_SOL_MINT
+    ):
+        return "close"
+    if (
+        token_out_address == SOLANA_WRAPPED_SOL_MINT
+        and token_in_address is not None
+        and token_in_address != SOLANA_WRAPPED_SOL_MINT
+    ):
+        return "open"
+    return None

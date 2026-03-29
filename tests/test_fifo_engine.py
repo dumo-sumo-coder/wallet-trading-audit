@@ -14,11 +14,12 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from normalize.schema import Chain, EventType, NormalizedTransaction  # noqa: E402
-from pnl.fifo_engine import FifoEngine  # noqa: E402
+from pnl.fifo_engine import FifoEngine, InsufficientInventoryError  # noqa: E402
 
 WALLET = "wallet-1"
 TRADED_TOKEN = "TokenMint1111111111111111111111111111111111"
 QUOTE_TOKEN = "UsdMint111111111111111111111111111111111111"
+WRAPPED_SOL = "So11111111111111111111111111111111111111112"
 
 
 def normalized_swap(
@@ -235,6 +236,59 @@ class FifoEngineTests(unittest.TestCase):
         self.assertEqual(result.open_lots[0].source_tx_hash, "buy-2")
         self.assertEqual(result.open_lots[0].quantity_open, Decimal("2"))
         self.assertEqual(result.open_lots[0].unit_cost_usd, Decimal("12"))
+
+    def test_wrapped_sol_round_trip_uses_non_sol_token_inventory(self) -> None:
+        transactions = [
+            normalized_swap(
+                tx_hash="buy-sol-1",
+                block_time=self.start,
+                token_in_address=TRADED_TOKEN,
+                token_out_address=WRAPPED_SOL,
+                amount_in="25",
+                amount_out="1",
+                usd_value="100",
+            ),
+            normalized_swap(
+                tx_hash="sell-sol-1",
+                block_time=self.start.replace(hour=13),
+                token_in_address=WRAPPED_SOL,
+                token_out_address=TRADED_TOKEN,
+                amount_in="1.5",
+                amount_out="25",
+                usd_value="150",
+            ),
+        ]
+
+        result = self.engine.reconstruct(transactions)
+
+        self.assertEqual(len(result.trade_matches), 1)
+        trade_match = result.trade_matches[0]
+        self.assertEqual(trade_match.token_address, TRADED_TOKEN)
+        self.assertEqual(trade_match.cost_basis_usd, Decimal("100"))
+        self.assertEqual(trade_match.proceeds_usd, Decimal("150"))
+        self.assertEqual(trade_match.realized_pnl_usd, Decimal("50"))
+        self.assertEqual(result.open_lots, ())
+        self.assertTrue(all(lot.token_address != WRAPPED_SOL for lot in result.open_lots))
+
+    def test_wrapped_sol_sell_without_token_inventory_raises_for_sold_token(self) -> None:
+        transactions = [
+            normalized_swap(
+                tx_hash="sell-sol-1",
+                block_time=self.start,
+                token_in_address=WRAPPED_SOL,
+                token_out_address=TRADED_TOKEN,
+                amount_in="1.5",
+                amount_out="25",
+                usd_value="150",
+            )
+        ]
+
+        with self.assertRaises(InsufficientInventoryError) as context:
+            self.engine.reconstruct(transactions)
+
+        self.assertEqual(context.exception.token_address, TRADED_TOKEN)
+        self.assertEqual(context.exception.tx_hash, "sell-sol-1")
+        self.assertNotEqual(context.exception.token_address, WRAPPED_SOL)
 
     def test_transfer_row_is_ignored_for_realized_pnl(self) -> None:
         transactions = [

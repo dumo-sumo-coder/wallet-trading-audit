@@ -19,7 +19,8 @@ if str(SRC) not in sys.path:
 
 from ingestion.solana_review import load_json_mapping  # noqa: E402
 from normalize.schema import EventType, NormalizedTransaction  # noqa: E402
-from normalize.transactions import normalize_transaction  # noqa: E402
+from normalize.transactions import SOLANA_WRAPPED_SOL_MINT, normalize_transaction  # noqa: E402
+from pnl.fifo_engine import InsufficientInventoryError  # noqa: E402
 from pnl.pipeline import run_fifo_pipeline  # noqa: E402
 from valuation.solana_valuation import (  # noqa: E402
     SolanaValuationRecord,
@@ -49,8 +50,11 @@ class UnsupportedReasonCount:
 class FifoCoverageSummary:
     status: str
     fifo_candidate_transactions_count: int
+    fifo_executed_transactions_count: int
     skipped_missing_valuation_count: int
     skipped_missing_valuation_tx_hashes: tuple[str, ...]
+    unsupported_fifo_transactions_count: int
+    unsupported_fifo_transactions: tuple[UnsupportedSnapshotTransaction, ...]
     realized_pnl_usd: Decimal | None
     trade_matches_count: int
     remaining_positions_count: int
@@ -292,10 +296,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     fifo_summary = analysis.fifo_summary
     print(f"FIFO status: {fifo_summary.status}")
     print(f"FIFO candidate transactions: {fifo_summary.fifo_candidate_transactions_count}")
+    print(f"FIFO executed transactions: {fifo_summary.fifo_executed_transactions_count}")
     print(
         "Skipped for missing valuation: "
         f"{fifo_summary.skipped_missing_valuation_count}"
     )
+    print(
+        "Skipped unsupported FIFO rows: "
+        f"{fifo_summary.unsupported_fifo_transactions_count}"
+    )
+    if fifo_summary.unsupported_fifo_transactions:
+        for item in fifo_summary.unsupported_fifo_transactions[:5]:
+            print(f"  unsupported FIFO row {item.tx_hash}: {item.reason}")
     if fifo_summary.skipped_missing_valuation_count > 0:
         print("FIFO realized PnL: not meaningful without trusted usd_value on skipped swap rows")
     else:
@@ -323,20 +335,19 @@ def _analyze_fifo_coverage(
     ]
 
     if skipped_missing_valuation:
-        fifo_result = None
-        fifo_error = None
-        if fifo_candidates:
-            try:
-                fifo_result = run_fifo_pipeline(fifo_candidates)
-            except ValueError as exc:
-                fifo_error = str(exc)
+        fifo_result, fifo_error, unsupported_fifo_transactions, executed_count = (
+            _run_fifo_on_supported_subset(fifo_candidates)
+        )
         return FifoCoverageSummary(
             status="not_meaningful_missing_valuation",
             fifo_candidate_transactions_count=len(fifo_candidates),
+            fifo_executed_transactions_count=executed_count,
             skipped_missing_valuation_count=len(skipped_missing_valuation),
             skipped_missing_valuation_tx_hashes=tuple(
                 transaction.tx_hash for transaction in skipped_missing_valuation
             ),
+            unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
+            unsupported_fifo_transactions=unsupported_fifo_transactions,
             realized_pnl_usd=None,
             trade_matches_count=(
                 len(fifo_result.fifo_result.trade_matches) if fifo_result is not None else 0
@@ -355,8 +366,11 @@ def _analyze_fifo_coverage(
         return FifoCoverageSummary(
             status="not_applicable_no_fifo_rows",
             fifo_candidate_transactions_count=0,
+            fifo_executed_transactions_count=0,
             skipped_missing_valuation_count=0,
             skipped_missing_valuation_tx_hashes=(),
+            unsupported_fifo_transactions_count=0,
+            unsupported_fifo_transactions=(),
             realized_pnl_usd=Decimal("0"),
             trade_matches_count=0,
             remaining_positions_count=0,
@@ -365,27 +379,35 @@ def _analyze_fifo_coverage(
             meaningful=False,
         )
 
-    try:
-        fifo_result = run_fifo_pipeline(fifo_candidates)
-    except ValueError as exc:
+    fifo_result, fifo_error, unsupported_fifo_transactions, executed_count = (
+        _run_fifo_on_supported_subset(fifo_candidates)
+    )
+    if fifo_error is not None:
         return FifoCoverageSummary(
             status="error",
             fifo_candidate_transactions_count=len(fifo_candidates),
+            fifo_executed_transactions_count=executed_count,
             skipped_missing_valuation_count=0,
             skipped_missing_valuation_tx_hashes=(),
+            unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
+            unsupported_fifo_transactions=unsupported_fifo_transactions,
             realized_pnl_usd=None,
             trade_matches_count=0,
             remaining_positions_count=0,
             recorded_fees_count=0,
-            error=str(exc),
+            error=fifo_error,
             meaningful=False,
         )
 
+    status = "computed_supported_subset" if unsupported_fifo_transactions else "computed"
     return FifoCoverageSummary(
-        status="computed",
+        status=status,
         fifo_candidate_transactions_count=len(fifo_candidates),
+        fifo_executed_transactions_count=executed_count,
         skipped_missing_valuation_count=0,
         skipped_missing_valuation_tx_hashes=(),
+        unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
+        unsupported_fifo_transactions=unsupported_fifo_transactions,
         realized_pnl_usd=fifo_result.realized_pnl_usd,
         trade_matches_count=len(fifo_result.fifo_result.trade_matches),
         remaining_positions_count=len(fifo_result.remaining_positions),
@@ -393,6 +415,67 @@ def _analyze_fifo_coverage(
         error=None,
         meaningful=True,
     )
+
+
+def _run_fifo_on_supported_subset(
+    fifo_candidates: Sequence[NormalizedTransaction],
+) -> tuple[object | None, str | None, tuple[UnsupportedSnapshotTransaction, ...], int]:
+    working_transactions = list(fifo_candidates)
+    unsupported_fifo_transactions: list[UnsupportedSnapshotTransaction] = []
+
+    while True:
+        try:
+            fifo_result = run_fifo_pipeline(working_transactions)
+        except InsufficientInventoryError as exc:
+            offending_transaction = next(
+                (
+                    transaction
+                    for transaction in working_transactions
+                    if transaction.tx_hash == exc.tx_hash
+                ),
+                None,
+            )
+            if (
+                offending_transaction is None
+                or not _is_wrapped_sol_quote_swap(offending_transaction)
+            ):
+                return (
+                    None,
+                    str(exc),
+                    tuple(unsupported_fifo_transactions),
+                    len(working_transactions),
+                )
+
+            unsupported_fifo_transactions.append(
+                UnsupportedSnapshotTransaction(
+                    index=-1,
+                    tx_hash=exc.tx_hash,
+                    reason=(
+                        "Unsupported FIFO subset case: wrapped-SOL token disposal has "
+                        "no opening inventory in the current transaction set."
+                    ),
+                )
+            )
+            working_transactions = [
+                transaction
+                for transaction in working_transactions
+                if transaction.tx_hash != exc.tx_hash
+            ]
+            continue
+        except ValueError as exc:
+            return (
+                None,
+                str(exc),
+                tuple(unsupported_fifo_transactions),
+                len(working_transactions),
+            )
+
+        return (
+            fifo_result,
+            None,
+            tuple(unsupported_fifo_transactions),
+            len(working_transactions),
+        )
 
 
 def _group_unsupported_reasons(
@@ -404,6 +487,21 @@ def _group_unsupported_reasons(
         for reason, count in sorted(
             reason_counts.items(),
             key=lambda item: (-item[1], item[0]),
+        )
+    )
+
+
+def _is_wrapped_sol_quote_swap(transaction: NormalizedTransaction) -> bool:
+    return transaction.event_type == EventType.SWAP and (
+        (
+            transaction.token_in_address == SOLANA_WRAPPED_SOL_MINT
+            and transaction.token_out_address is not None
+            and transaction.token_out_address != SOLANA_WRAPPED_SOL_MINT
+        )
+        or (
+            transaction.token_out_address == SOLANA_WRAPPED_SOL_MINT
+            and transaction.token_in_address is not None
+            and transaction.token_in_address != SOLANA_WRAPPED_SOL_MINT
         )
     )
 

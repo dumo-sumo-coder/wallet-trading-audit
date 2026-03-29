@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from decimal import Decimal
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "analyze_single_wallet_snapshot.py"
@@ -185,6 +186,7 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         )
         self.assertEqual(analysis.valuation_summary.rows_requiring_valuation_after_count, 0)
         self.assertEqual(analysis.fifo_summary.status, "computed")
+        self.assertEqual(analysis.fifo_summary.unsupported_fifo_transactions_count, 0)
         self.assertEqual(analysis.fifo_summary.meaningful, True)
         self.assertEqual(str(analysis.fifo_summary.realized_pnl_usd), "50")
 
@@ -224,7 +226,64 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(analysis.valuation_summary.local_trusted_valuation_records_count, 0)
         self.assertEqual(analysis.valuation_summary.local_trusted_valuations_applied_count, 0)
         self.assertEqual(analysis.valuation_summary.rows_requiring_valuation_after_count, 2)
+        self.assertEqual(analysis.fifo_summary.unsupported_fifo_transactions_count, 0)
         self.assertEqual(analysis.fifo_summary.meaningful, False)
+
+    def test_analyze_snapshot_skips_wrapped_sol_sell_without_open_inventory(self) -> None:
+        missing_entry_sell = copy.deepcopy(
+            load_json_fixture("solana_transaction_response_sell_example.json")
+        )
+        missing_entry_sell["result"]["transaction"]["signatures"][0] = "orphan-sell-001"
+        buy = load_json_fixture("solana_transaction_response_buy_example.json")
+        sell = load_json_fixture("solana_transaction_response_sell_example.json")
+        snapshot = build_snapshot_payload(missing_entry_sell, buy, sell)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "wallet_snapshot_20260329T030000Z.json"
+            valuation_path = temp_path / "wallet_snapshot_20260329T030000Z_trusted_valuations.json"
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+            valuation_path.write_text(
+                json.dumps(
+                    {
+                        "valuations": [
+                            build_trusted_valuation_record(
+                                wallet=snapshot["wallet"],
+                                raw_payload=missing_entry_sell,
+                                usd_value="150",
+                            ),
+                            build_trusted_valuation_record(
+                                wallet=snapshot["wallet"],
+                                raw_payload=buy,
+                                usd_value="100",
+                            ),
+                            build_trusted_valuation_record(
+                                wallet=snapshot["wallet"],
+                                raw_payload=sell,
+                                usd_value="150",
+                            ),
+                        ]
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            analysis = MODULE.analyze_snapshot_path(snapshot_path)
+
+        self.assertEqual(analysis.fifo_summary.status, "computed_supported_subset")
+        self.assertEqual(analysis.fifo_summary.unsupported_fifo_transactions_count, 1)
+        self.assertEqual(
+            analysis.fifo_summary.unsupported_fifo_transactions[0].tx_hash,
+            "orphan-sell-001",
+        )
+        self.assertIn(
+            "wrapped-SOL token disposal has no opening inventory",
+            analysis.fifo_summary.unsupported_fifo_transactions[0].reason,
+        )
+        self.assertEqual(analysis.fifo_summary.trade_matches_count, 1)
+        self.assertEqual(analysis.fifo_summary.realized_pnl_usd, Decimal("50"))
+        self.assertEqual(analysis.fifo_summary.remaining_positions_count, 0)
 
     def test_analyze_snapshot_path_writes_json_summary_next_to_snapshot(self) -> None:
         snapshot = build_snapshot_payload(load_json_fixture("solana_transaction_response_example.json"))
