@@ -99,8 +99,10 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
             temp_path = Path(temp_dir)
             older = temp_path / "wallet_fetch_metadata_20260329T010000Z.json"
             newer = temp_path / "wallet_fetch_metadata_20260329T020000Z.json"
+            derived_report = temp_path / "wallet_fetch_metadata_20260329T030000Z_trade_report.json"
             older.write_text(json.dumps({"page_snapshot_paths": []}), encoding="utf-8")
             newer.write_text(json.dumps({"page_snapshot_paths": []}), encoding="utf-8")
+            derived_report.write_text(json.dumps({"matched_trades": []}), encoding="utf-8")
 
             latest_path = MODULE.find_latest_fetch_metadata_path(temp_path)
 

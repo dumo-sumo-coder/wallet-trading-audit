@@ -211,7 +211,11 @@ def find_latest_snapshot_path(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path
 
 
 def find_latest_fetch_metadata_path(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path | None:
-    metadata_paths = sorted(snapshot_dir.glob("wallet_fetch_metadata_*.json"))
+    metadata_paths = sorted(
+        path
+        for path in snapshot_dir.glob("wallet_fetch_metadata_*.json")
+        if not any(marker in path.stem for marker in DERIVED_SNAPSHOT_STEM_MARKERS)
+    )
     if not metadata_paths:
         return None
     return metadata_paths[-1]

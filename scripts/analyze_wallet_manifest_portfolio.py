@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -132,6 +132,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=50,
         help="Solana transaction limit to use when --fetch-missing is enabled.",
     )
+    parser.add_argument(
+        "--solana-max-pages",
+        type=int,
+        default=1,
+        help=(
+            "Maximum number of paginated Solana history pages to fetch per wallet "
+            "when fetch mode is active."
+        ),
+    )
+    parser.add_argument(
+        "--refetch-existing",
+        action="store_true",
+        help=(
+            "Refresh selected Solana wallets even when local snapshots already exist, "
+            "so deeper history can replace shallow smoke-test data."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -148,6 +165,8 @@ def analyze_wallet_manifest_portfolio(
     recent_only: bool = False,
     fetch_missing: bool = False,
     solana_limit: int = 50,
+    solana_max_pages: int = 1,
+    refetch_existing: bool = False,
 ) -> ManifestPortfolioRun:
     entries = load_wallet_manifest(manifest_path)
     filtered_entries = filter_wallet_manifest_entries(
@@ -170,6 +189,8 @@ def analyze_wallet_manifest_portfolio(
             repository_root=repository_root,
             fetch_missing=fetch_missing,
             solana_limit=solana_limit,
+            solana_max_pages=solana_max_pages,
+            refetch_existing=refetch_existing,
         )
         for entry in selected_entries
     )
@@ -195,6 +216,8 @@ def analyze_wallet_manifest_portfolio(
             "recent_only": recent_only,
             "fetch_missing": fetch_missing,
             "solana_limit": solana_limit,
+            "solana_max_pages": solana_max_pages,
+            "refetch_existing": refetch_existing,
         },
     )
 
@@ -211,6 +234,8 @@ def analyze_wallet_manifest_portfolio(
             "recent_only": recent_only,
             "fetch_missing": fetch_missing,
             "solana_limit": solana_limit,
+            "solana_max_pages": solana_max_pages,
+            "refetch_existing": refetch_existing,
         },
         report=report,
     )
@@ -232,6 +257,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             recent_only=args.recent_only,
             fetch_missing=args.fetch_missing,
             solana_limit=args.solana_limit,
+            solana_max_pages=args.solana_max_pages,
+            refetch_existing=args.refetch_existing,
         )
     except (FileNotFoundError, ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -297,6 +324,8 @@ def _analyze_manifest_entry(
     repository_root: Path,
     fetch_missing: bool,
     solana_limit: int,
+    solana_max_pages: int,
+    refetch_existing: bool,
 ) -> PortfolioWalletSummary:
     if entry.chain not in SUPPORTED_ANALYSIS_CHAINS:
         return PortfolioWalletSummary(
@@ -327,11 +356,21 @@ def _analyze_manifest_entry(
         )
 
     analysis_target = _find_local_analysis_target(entry, repository_root=repository_root)
-    if analysis_target is None and fetch_missing:
-        analysis_target = _fetch_missing_solana_snapshot(
+    if refetch_existing and entry.chain == "solana":
+        analysis_target = _fetch_solana_history(
             entry,
             repository_root=repository_root,
             limit=solana_limit,
+            max_pages=solana_max_pages,
+            fetch_mode="manifest_portfolio_refetch_existing",
+        )
+    elif analysis_target is None and fetch_missing:
+        analysis_target = _fetch_solana_history(
+            entry,
+            repository_root=repository_root,
+            limit=solana_limit,
+            max_pages=solana_max_pages,
+            fetch_mode="manifest_portfolio_fetch_missing",
         )
 
     if analysis_target is None:
@@ -494,12 +533,19 @@ def _find_local_analysis_target(
     )
 
 
-def _fetch_missing_solana_snapshot(
+def _fetch_solana_history(
     entry: WalletManifestEntry,
     *,
     repository_root: Path,
     limit: int,
+    max_pages: int,
+    fetch_mode: str,
 ) -> _AnalysisTarget:
+    if limit <= 0:
+        raise ValueError("solana_limit must be positive.")
+    if max_pages <= 0:
+        raise ValueError("solana_max_pages must be positive.")
+
     wallet_directory = manifest_entry_wallet_directory(
         entry,
         repository_root=repository_root,
@@ -508,18 +554,55 @@ def _fetch_missing_solana_snapshot(
     fetch_time = _utc_now()
     fetch_time_text = fetch_time.isoformat()
     timestamp_token = fetch_time.strftime("%Y%m%dT%H%M%SZ")
-    snapshot_path = wallet_directory / f"wallet_snapshot_{timestamp_token}.json"
+    page_directory = wallet_directory / f"fetch_{timestamp_token}"
+    page_directory.mkdir(parents=True, exist_ok=True)
     metadata_path = wallet_directory / f"wallet_fetch_metadata_{timestamp_token}.json"
 
     client = SolanaRpcClient()
-    snapshot = client.fetch_recent_transaction_history(entry.wallet, limit=limit)
-    source = snapshot.get("source")
     provider = "solana_json_rpc"
-    if isinstance(source, dict):
-        source_provider = source.get("provider")
-        if isinstance(source_provider, str) and source_provider.strip():
-            provider = source_provider
-    snapshot_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    page_snapshot_paths: list[str] = []
+    page_records: list[dict[str, object]] = []
+    total_tx_count = 0
+    before: str | None = None
+    last_snapshot_fetched_at = fetch_time_text
+
+    for page_number in range(1, max_pages + 1):
+        snapshot = client.fetch_recent_transaction_history(entry.wallet, limit=limit, before=before)
+        source = snapshot.get("source")
+        if isinstance(source, dict):
+            source_provider = source.get("provider")
+            if isinstance(source_provider, str) and source_provider.strip():
+                provider = source_provider
+
+        tx_count = _count_transaction_responses(snapshot)
+        if tx_count == 0:
+            break
+
+        snapshot_path = page_directory / f"wallet_snapshot_page_{page_number:03d}.json"
+        snapshot_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+        page_snapshot_paths.append(_relative_path_text(snapshot_path, repository_root))
+        total_tx_count += tx_count
+        last_snapshot_fetched_at = _extract_fetched_at(snapshot, default=last_snapshot_fetched_at)
+        page_records.append(
+            {
+                "page_number": page_number,
+                "before": before,
+                "tx_count": tx_count,
+                "snapshot_path": _relative_path_text(snapshot_path, repository_root),
+                "first_tx_hash": _extract_first_tx_hash(snapshot),
+                "last_tx_hash": _extract_last_tx_hash(snapshot),
+            }
+        )
+
+        if tx_count < limit:
+            break
+        before = _extract_last_signature(snapshot)
+        if before is None:
+            break
+
+    if not page_snapshot_paths:
+        raise ValueError("Solana fetch returned no transaction responses.")
+
     metadata_path.write_text(
         json.dumps(
             {
@@ -529,20 +612,25 @@ def _fetch_missing_solana_snapshot(
                 "group": entry.group,
                 "notes": entry.notes,
                 "provider": provider,
-                "fetched_at": fetch_time_text,
+                "fetched_at": last_snapshot_fetched_at,
                 "status": "success",
-                "snapshot_path": _relative_path_text(snapshot_path, repository_root),
-                "page_snapshot_paths": [_relative_path_text(snapshot_path, repository_root)],
-                "fetch_mode": "manifest_portfolio_fetch_missing",
+                "snapshot_path": page_snapshot_paths[0],
+                "page_snapshot_paths": page_snapshot_paths,
+                "fetch_directory": _relative_path_text(page_directory, repository_root),
+                "fetch_mode": fetch_mode,
                 "limit": limit,
+                "max_pages_requested": max_pages,
+                "total_pages_fetched": len(page_records),
+                "total_tx_count": total_tx_count,
+                "pages": page_records,
             },
             indent=2,
         ),
         encoding="utf-8",
     )
     return _AnalysisTarget(
-        path=snapshot_path,
-        target_type="snapshot",
+        path=metadata_path,
+        target_type="fetch_metadata",
         timestamp=fetch_time,
     )
 
@@ -648,6 +736,68 @@ def _is_multipage_fetch_metadata(path: Path) -> bool:
         return False
     page_snapshot_paths = payload.get("page_snapshot_paths")
     return isinstance(page_snapshot_paths, list) and bool(page_snapshot_paths)
+
+
+def _count_transaction_responses(snapshot: Mapping[str, object]) -> int:
+    responses = snapshot.get("transaction_responses")
+    if not isinstance(responses, list):
+        raise ValueError("Solana snapshot is missing transaction_responses.")
+    return len(responses)
+
+
+def _extract_fetched_at(snapshot: Mapping[str, object], *, default: str) -> str:
+    fetched_at = snapshot.get("fetched_at_utc")
+    if not isinstance(fetched_at, str) or not fetched_at.strip():
+        return default
+    return fetched_at
+
+
+def _extract_last_signature(snapshot: Mapping[str, object]) -> str | None:
+    signatures_response = snapshot.get("signatures_response")
+    if not isinstance(signatures_response, Mapping):
+        return None
+    result = signatures_response.get("result")
+    if not isinstance(result, list) or not result:
+        return None
+    last_row = result[-1]
+    if not isinstance(last_row, Mapping):
+        return None
+    signature = last_row.get("signature")
+    if not isinstance(signature, str) or not signature.strip():
+        return None
+    return signature
+
+
+def _extract_first_tx_hash(snapshot: Mapping[str, object]) -> str | None:
+    responses = snapshot.get("transaction_responses")
+    if not isinstance(responses, list) or not responses:
+        return None
+    return _extract_tx_hash_from_payload(responses[0])
+
+
+def _extract_last_tx_hash(snapshot: Mapping[str, object]) -> str | None:
+    responses = snapshot.get("transaction_responses")
+    if not isinstance(responses, list) or not responses:
+        return None
+    return _extract_tx_hash_from_payload(responses[-1])
+
+
+def _extract_tx_hash_from_payload(payload: object) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    result = payload.get("result")
+    if not isinstance(result, Mapping):
+        return None
+    transaction = result.get("transaction")
+    if not isinstance(transaction, Mapping):
+        return None
+    signatures = transaction.get("signatures")
+    if not isinstance(signatures, list) or not signatures:
+        return None
+    first_signature = signatures[0]
+    if not isinstance(first_signature, str) or not first_signature.strip():
+        return None
+    return first_signature
 
 
 def _relative_path_text(path: Path, repository_root: Path) -> str:

@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = ROOT / "scripts" / "analyze_wallet_manifest_portfolio.py"
@@ -102,6 +103,46 @@ def write_wallet_snapshot(
             encoding="utf-8",
         )
     return snapshot_path
+
+
+class _PaginatedTransferClient:
+    def fetch_recent_transaction_history(
+        self,
+        wallet: str,
+        *,
+        limit: int = 20,
+        before: str | None = None,
+    ) -> dict[str, object]:
+        transfer_in = copy.deepcopy(load_json_fixture("solana_transaction_response_transfer_in_example.json"))
+        if before is None:
+            responses = [copy.deepcopy(transfer_in), copy.deepcopy(transfer_in)]
+            signatures = ["sig-3", "sig-2"]
+        elif before == "sig-2":
+            responses = [copy.deepcopy(transfer_in)]
+            signatures = ["sig-1"]
+        else:
+            responses = []
+            signatures = []
+
+        for signature, response in zip(signatures, responses, strict=False):
+            result = response.setdefault("result", {})
+            if isinstance(result, dict):
+                transaction = result.setdefault("transaction", {})
+                if isinstance(transaction, dict):
+                    transaction["signatures"] = [signature]
+
+        return {
+            "wallet": wallet,
+            "fetched_at_utc": "2026-03-29T05:30:00+00:00",
+            "source": {
+                "provider": "solana_json_rpc",
+                "rpc_url": "https://mainnet.helius-rpc.com/?redacted",
+            },
+            "signatures_response": {
+                "result": [{"signature": signature} for signature in signatures],
+            },
+            "transaction_responses": responses,
+        }
 
 
 class AnalyzeWalletManifestPortfolioScriptTests(unittest.TestCase):
@@ -364,6 +405,54 @@ class AnalyzeWalletManifestPortfolioScriptTests(unittest.TestCase):
         self.assertIsNotNone(target)
         self.assertEqual(target.target_type, "snapshot")
         self.assertEqual(target.path.name, snapshot_path.name)
+
+    def test_refetch_existing_refreshes_wallet_with_paginated_history(self) -> None:
+        manifest_text = (
+            "wallet,chain,label,group\n"
+            f"{FIXTURE_SOLANA_WALLET},solana,Alpha Wallet,Recent\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+            entry = load_wallet_manifest(manifest_path)[0]
+
+            write_wallet_snapshot(
+                repository_root=repository_root,
+                manifest_entry=entry,
+                snapshot_filename="wallet_snapshot_20260329T010000Z.json",
+                snapshot_payload=build_snapshot_payload(
+                    load_json_fixture("solana_transaction_response_transfer_in_example.json"),
+                    wallet=FIXTURE_SOLANA_WALLET,
+                ),
+                trusted_valuations=None,
+            )
+
+            with patch.object(
+                MODULE,
+                "SolanaRpcClient",
+                return_value=_PaginatedTransferClient(),
+            ):
+                run = MODULE.analyze_wallet_manifest_portfolio(
+                    manifest_path,
+                    repository_root=repository_root,
+                    output_dir=repository_root / "data" / "reports" / "portfolio",
+                    refetch_existing=True,
+                    solana_limit=2,
+                    solana_max_pages=2,
+                )
+
+            wallet_summary = run.report.wallet_summaries[0]
+            self.assertIn("wallet_fetch_metadata_", wallet_summary.source_path)
+
+            metadata_path = repository_root / wallet_summary.source_path
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata_payload["fetch_mode"], "manifest_portfolio_refetch_existing")
+            self.assertEqual(metadata_payload["total_pages_fetched"], 2)
+            self.assertEqual(metadata_payload["total_tx_count"], 3)
+            self.assertEqual(len(metadata_payload["page_snapshot_paths"]), 2)
 
 
 if __name__ == "__main__":
