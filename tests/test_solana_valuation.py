@@ -129,6 +129,20 @@ class SolanaValuationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "valuation_status"):
                 load_trusted_valuation_records(malformed_path)
 
+    def test_load_trusted_valuation_records_ignores_pending_template_rows(self) -> None:
+        buy = normalize_fixture("solana_transaction_response_buy_example.json")
+        pending_record = build_trusted_record(buy, usd_value="100")
+        pending_record["usd_value"] = None
+        pending_record["valuation_source"] = None
+        pending_record["valuation_status"] = "pending"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "pending_valuations.json"
+            path.write_text(json.dumps({"valuations": [pending_record]}, indent=2), encoding="utf-8")
+            loaded = load_trusted_valuation_records(path)
+
+        self.assertEqual(loaded, ())
+
 
 def load_trusted_valuation_records_from_objects(records: list[dict[str, object]]):
     with tempfile.TemporaryDirectory() as temp_dir:

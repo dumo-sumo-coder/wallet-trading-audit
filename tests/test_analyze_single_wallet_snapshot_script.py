@@ -186,6 +186,44 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(analysis.fifo_summary.meaningful, True)
         self.assertEqual(str(analysis.fifo_summary.realized_pnl_usd), "50")
 
+    def test_analyze_snapshot_ignores_pending_template_rows(self) -> None:
+        buy = load_json_fixture("solana_transaction_response_buy_example.json")
+        sell = load_json_fixture("solana_transaction_response_sell_example.json")
+        snapshot = build_snapshot_payload(buy, sell)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            snapshot_path = temp_path / "wallet_snapshot_20260329T030000Z.json"
+            valuation_path = temp_path / "wallet_snapshot_20260329T030000Z_trusted_valuations.json"
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+            valuation_path.write_text(
+                json.dumps(
+                    {
+                        "valuations": [
+                            {
+                                **build_trusted_valuation_record(
+                                    wallet=snapshot["wallet"],
+                                    raw_payload=buy,
+                                    usd_value="100",
+                                ),
+                                "usd_value": None,
+                                "valuation_source": None,
+                                "valuation_status": "pending",
+                            }
+                        ]
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            analysis = MODULE.analyze_snapshot_path(snapshot_path)
+
+        self.assertEqual(analysis.valuation_summary.local_trusted_valuation_records_count, 0)
+        self.assertEqual(analysis.valuation_summary.local_trusted_valuations_applied_count, 0)
+        self.assertEqual(analysis.valuation_summary.rows_requiring_valuation_after_count, 2)
+        self.assertEqual(analysis.fifo_summary.meaningful, False)
+
     def test_analyze_snapshot_path_writes_json_summary_next_to_snapshot(self) -> None:
         snapshot = build_snapshot_payload(load_json_fixture("solana_transaction_response_example.json"))
 

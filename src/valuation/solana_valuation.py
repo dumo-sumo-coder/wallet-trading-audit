@@ -12,6 +12,7 @@ from typing import Mapping, Sequence
 from normalize.schema import Chain, EventType, NormalizedTransaction
 
 VALUATION_STATUS_NEEDS_VALUATION = "needs_valuation"
+VALUATION_STATUS_PENDING = "pending"
 VALUATION_STATUS_TRUSTED = "trusted"
 
 
@@ -40,6 +41,14 @@ class SolanaValuationRecord:
         ):
             if not value.strip():
                 raise ValueError(f"{field_name} must be a non-empty string")
+        if self.valuation_status not in {
+            VALUATION_STATUS_NEEDS_VALUATION,
+            VALUATION_STATUS_PENDING,
+            VALUATION_STATUS_TRUSTED,
+        }:
+            raise ValueError(
+                "valuation_status must be one of: needs_valuation, pending, trusted"
+            )
         if self.block_time.tzinfo is None or self.block_time.utcoffset() is None:
             raise ValueError("block_time must be timezone-aware")
         if self.amount_in <= Decimal("0"):
@@ -50,10 +59,13 @@ class SolanaValuationRecord:
             raise ValueError("usd_value cannot be negative")
         if self.valuation_source is not None and not self.valuation_source.strip():
             raise ValueError("valuation_source cannot be blank when provided")
-        if self.valuation_status == VALUATION_STATUS_NEEDS_VALUATION:
+        if self.valuation_status in {
+            VALUATION_STATUS_NEEDS_VALUATION,
+            VALUATION_STATUS_PENDING,
+        }:
             if self.valuation_source is not None or self.usd_value is not None:
                 raise ValueError(
-                    "needs_valuation records cannot carry valuation_source or usd_value"
+                    f"{self.valuation_status} records cannot carry valuation_source or usd_value"
                 )
 
 
@@ -177,7 +189,11 @@ def summarize_valuation_readiness(
 
 
 def load_trusted_valuation_records(path: Path) -> tuple[SolanaValuationRecord, ...]:
-    """Load explicit trusted valuation records from a local JSON file."""
+    """Load explicit trusted valuation records from a local JSON file.
+
+    Pending template rows are allowed in the file, but they are ignored until
+    they are completed with `valuation_status="trusted"`.
+    """
 
     parsed = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(parsed, Mapping):
@@ -190,7 +206,10 @@ def load_trusted_valuation_records(path: Path) -> tuple[SolanaValuationRecord, .
             "Trusted valuation file must be a JSON list or an object with a 'valuations' list."
         )
 
-    return tuple(_parse_trusted_valuation_record(item) for item in raw_records)
+    parsed_records = tuple(_parse_valuation_record(item) for item in raw_records)
+    return tuple(
+        record for record in parsed_records if record.valuation_status == VALUATION_STATUS_TRUSTED
+    )
 
 
 def find_local_trusted_valuation_path(snapshot_path: Path) -> Path | None:
@@ -280,10 +299,11 @@ def _validate_record_matches_transaction(
         )
 
 
-def _parse_trusted_valuation_record(value: object) -> SolanaValuationRecord:
+def _parse_valuation_record(value: object) -> SolanaValuationRecord:
     if not isinstance(value, Mapping):
         raise ValueError("Each trusted valuation record must be a JSON object")
 
+    valuation_status = _require_text(value, "valuation_status")
     return SolanaValuationRecord(
         tx_hash=_require_text(value, "tx_hash"),
         wallet=_require_text(value, "wallet"),
@@ -292,9 +312,17 @@ def _parse_trusted_valuation_record(value: object) -> SolanaValuationRecord:
         token_out_address=_require_text(value, "token_out_address"),
         amount_in=_require_decimal(value, "amount_in"),
         amount_out=_require_decimal(value, "amount_out"),
-        valuation_source=_require_text(value, "valuation_source"),
-        usd_value=_require_decimal(value, "usd_value"),
-        valuation_status=_require_text(value, "valuation_status"),
+        valuation_source=(
+            _require_text(value, "valuation_source")
+            if valuation_status == VALUATION_STATUS_TRUSTED
+            else _optional_text(value.get("valuation_source"))
+        ),
+        usd_value=(
+            _require_decimal(value, "usd_value")
+            if valuation_status == VALUATION_STATUS_TRUSTED
+            else _optional_decimal(value.get("usd_value"))
+        ),
+        valuation_status=valuation_status,
     )
 
 
@@ -315,4 +343,20 @@ def _require_decimal(mapping: Mapping[str, object], key: str) -> Decimal:
     text = str(value).strip()
     if not text:
         raise ValueError(f"Valuation decimal field '{key}' cannot be blank")
+    return Decimal(text)
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _optional_decimal(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
     return Decimal(text)

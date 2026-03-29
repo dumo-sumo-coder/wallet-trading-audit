@@ -167,6 +167,28 @@ python scripts/fetch_from_wallet_manifest.py --preflight
 python scripts/fetch_from_wallet_manifest.py
 ```
 
+## Manual Valuation Step
+
+For real Solana snapshots, swap rows can remain unpriced until you attach a
+trusted `usd_value` manually.
+
+Use the helper script to generate a strict template next to the snapshot:
+
+```bash
+python scripts/prepare_trusted_valuations_template.py
+```
+
+This creates a `*_trusted_valuations.json` file with pending rows that must be
+completed by hand. Only enter `usd_value` values from an explicitly verified
+source, add a clear `valuation_source`, and change `valuation_status` to
+`trusted`. Do not enter guessed prices.
+
+After the file is completed, rerun:
+
+```bash
+python scripts/analyze_single_wallet_snapshot.py
+```
+
 ## Current Limitations
 
 - No ingestion backends are implemented yet
