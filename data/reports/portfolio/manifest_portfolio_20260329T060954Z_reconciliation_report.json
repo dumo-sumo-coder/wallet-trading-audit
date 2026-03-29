@@ -1,0 +1,178 @@
+{
+  "wallet_summaries": [
+    {
+      "wallet": "3rv3sVUvkoLzCWpGGc6DSA9ZJDWBdjCQLB26jLeGchMY",
+      "label": "Axiom 11",
+      "group": "Axiom",
+      "status": "included_supported_subset",
+      "included_in_aggregate": true,
+      "matched_realized_pnl_usd": "-92.91094863413999999999999999",
+      "net_capital_flow_usd": "-87.17216226746",
+      "reconciliation_gap_usd": "5.73878636667999999999999999",
+      "unmatched_notional_usd": "5.7387863666800000000000001",
+      "unsupported_transaction_count": 5,
+      "unsupported_notional": {
+        "measured_usd": "0",
+        "measured_row_count": 0,
+        "unknown_row_count": 5
+      },
+      "valuation_blocked_row_count": 0,
+      "valuation_blocked_notional": {
+        "measured_usd": "0",
+        "measured_row_count": 0,
+        "unknown_row_count": 0
+      },
+      "open_positions_count": 0,
+      "skipped_fifo_rows_count": 1
+    },
+    {
+      "wallet": "4gT9rv1xGy3NsDJKpaE1nFvARSXBovRsVQuNEWBT11bN",
+      "label": "Axiom 10",
+      "group": "Axiom",
+      "status": "included_supported_subset",
+      "included_in_aggregate": true,
+      "matched_realized_pnl_usd": "-67.99026664658999999999999998",
+      "net_capital_flow_usd": "-60.64795338754",
+      "reconciliation_gap_usd": "7.34231325904999999999999998",
+      "unmatched_notional_usd": "7.3423132590500000000000000",
+      "unsupported_transaction_count": 3,
+      "unsupported_notional": {
+        "measured_usd": "0",
+        "measured_row_count": 0,
+        "unknown_row_count": 3
+      },
+      "valuation_blocked_row_count": 0,
+      "valuation_blocked_notional": {
+        "measured_usd": "0",
+        "measured_row_count": 0,
+        "unknown_row_count": 0
+      },
+      "open_positions_count": 0,
+      "skipped_fifo_rows_count": 1
+    },
+    {
+      "wallet": "CcNvTgSzJpN1mUcpnidothDewazN56ZUaAPEZX4o8kPn",
+      "label": "FOMO 2",
+      "group": "FOMO",
+      "status": "included_supported_subset",
+      "included_in_aggregate": true,
+      "matched_realized_pnl_usd": "-17.36147999999999999999999997",
+      "net_capital_flow_usd": "-117.181679",
+      "reconciliation_gap_usd": "-99.82019900000000000000000003",
+      "unmatched_notional_usd": "28.6628580000000000000000000",
+      "unsupported_transaction_count": 2,
+      "unsupported_notional": {
+        "measured_usd": "0",
+        "measured_row_count": 0,
+        "unknown_row_count": 2
+      },
+      "valuation_blocked_row_count": 0,
+      "valuation_blocked_notional": {
+        "measured_usd": "0",
+        "measured_row_count": 0,
+        "unknown_row_count": 0
+      },
+      "open_positions_count": 2,
+      "skipped_fifo_rows_count": 0
+    }
+  ],
+  "summary": {
+    "analyzed_wallet_count": 3,
+    "included_wallet_count": 3,
+    "matched_realized_pnl_usd": "-178.2626952807300000000000000",
+    "net_capital_flow_usd": "-265.00179465500",
+    "reconciliation_gap_usd": "-86.7390993742700000000000000",
+    "unmatched_notional_usd": "41.7439576257300000000000001",
+    "unsupported_transaction_count": 10,
+    "unsupported_notional": {
+      "measured_usd": "0",
+      "measured_row_count": 0,
+      "unknown_row_count": 10
+    },
+    "valuation_blocked_row_count": 0,
+    "valuation_blocked_notional": {
+      "measured_usd": "0",
+      "measured_row_count": 0,
+      "unknown_row_count": 0
+    },
+    "open_positions_count": 2,
+    "skipped_fifo_rows_count": 2,
+    "wallet_rankings_by_gap": [
+      {
+        "wallet": "CcNvTgSzJpN1mUcpnidothDewazN56ZUaAPEZX4o8kPn",
+        "label": "FOMO 2",
+        "group": "FOMO",
+        "status": "included_supported_subset",
+        "included_in_aggregate": true,
+        "matched_realized_pnl_usd": "-17.36147999999999999999999997",
+        "net_capital_flow_usd": "-117.181679",
+        "reconciliation_gap_usd": "-99.82019900000000000000000003",
+        "unmatched_notional_usd": "28.6628580000000000000000000",
+        "unsupported_transaction_count": 2,
+        "unsupported_notional": {
+          "measured_usd": "0",
+          "measured_row_count": 0,
+          "unknown_row_count": 2
+        },
+        "valuation_blocked_row_count": 0,
+        "valuation_blocked_notional": {
+          "measured_usd": "0",
+          "measured_row_count": 0,
+          "unknown_row_count": 0
+        },
+        "open_positions_count": 2,
+        "skipped_fifo_rows_count": 0
+      },
+      {
+        "wallet": "3rv3sVUvkoLzCWpGGc6DSA9ZJDWBdjCQLB26jLeGchMY",
+        "label": "Axiom 11",
+        "group": "Axiom",
+        "status": "included_supported_subset",
+        "included_in_aggregate": true,
+        "matched_realized_pnl_usd": "-92.91094863413999999999999999",
+        "net_capital_flow_usd": "-87.17216226746",
+        "reconciliation_gap_usd": "5.73878636667999999999999999",
+        "unmatched_notional_usd": "5.7387863666800000000000001",
+        "unsupported_transaction_count": 5,
+        "unsupported_notional": {
+          "measured_usd": "0",
+          "measured_row_count": 0,
+          "unknown_row_count": 5
+        },
+        "valuation_blocked_row_count": 0,
+        "valuation_blocked_notional": {
+          "measured_usd": "0",
+          "measured_row_count": 0,
+          "unknown_row_count": 0
+        },
+        "open_positions_count": 0,
+        "skipped_fifo_rows_count": 1
+      },
+      {
+        "wallet": "4gT9rv1xGy3NsDJKpaE1nFvARSXBovRsVQuNEWBT11bN",
+        "label": "Axiom 10",
+        "group": "Axiom",
+        "status": "included_supported_subset",
+        "included_in_aggregate": true,
+        "matched_realized_pnl_usd": "-67.99026664658999999999999998",
+        "net_capital_flow_usd": "-60.64795338754",
+        "reconciliation_gap_usd": "7.34231325904999999999999998",
+        "unmatched_notional_usd": "7.3423132590500000000000000",
+        "unsupported_transaction_count": 3,
+        "unsupported_notional": {
+          "measured_usd": "0",
+          "measured_row_count": 0,
+          "unknown_row_count": 3
+        },
+        "valuation_blocked_row_count": 0,
+        "valuation_blocked_notional": {
+          "measured_usd": "0",
+          "measured_row_count": 0,
+          "unknown_row_count": 0
+        },
+        "open_positions_count": 0,
+        "skipped_fifo_rows_count": 1
+      }
+    ]
+  }
+}

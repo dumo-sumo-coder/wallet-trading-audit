@@ -1,0 +1,108 @@
+{
+  "included_wallet_count": 3,
+  "included_wallet_labels": [
+    "Axiom 11",
+    "Axiom 10",
+    "FOMO 2"
+  ],
+  "original_realized_pnl_usd": "-178.2626952807300000000000001",
+  "top_leak_patterns": [
+    {
+      "rank": 1,
+      "title": "Losses were concentrated in a small token subset",
+      "category": "token/setup blacklist threshold",
+      "evidence": "Top losing tokens contributed 0.4198731840658850587271171884 of total losses; the heaviest leaks included HFHMybtPneaeEMrgyuzNLhrxtUBV3MyUqJBr8sc8pump, Hxrn87ryK5vhx4PSrTytV2UZDevCk7VRdJGD2Dpopump, FM7cEUqXbkV2dbUyENA82xMkduUkY1gpbJeMVPhhpump. Positive improvement was observed in 3/3 included wallets.",
+      "estimated_pnl_drag_usd": "191.2865116887700000000000001",
+      "affected_wallet_count": 3,
+      "total_wallet_count": 3
+    },
+    {
+      "rank": 2,
+      "title": "Higher-cost entries lost money disproportionately",
+      "category": "max cost basis",
+      "evidence": "Removing 43 trades above the tested cost-basis threshold would have changed realized PnL by 178.2626952807300000000000001. Positive improvement was observed in 3/3 included wallets.",
+      "estimated_pnl_drag_usd": "178.2626952807300000000000001",
+      "affected_wallet_count": 3,
+      "total_wallet_count": 3
+    },
+    {
+      "rank": 3,
+      "title": "Fast rotations were a recurring leak",
+      "category": "hold-time floor",
+      "evidence": "20 trades in the matched fast-rotation bucket contributed -105.8335215505200000000000000. Positive improvement was observed in 2/3 included wallets.",
+      "estimated_pnl_drag_usd": "105.8335215505200000000000002",
+      "affected_wallet_count": 2,
+      "total_wallet_count": 3
+    }
+  ],
+  "top_candidate_rules": [
+    {
+      "rank": 1,
+      "title": "Blacklist tokens after cumulative matched-trade loss exceeds $3",
+      "category": "token/setup blacklist threshold",
+      "scenario_name": "exclude_tokens_losing_more_than_3_usd",
+      "estimated_pnl_improvement_usd": "191.2865116887700000000000001",
+      "estimated_new_realized_pnl_usd": "13.02381640804000000000000000",
+      "filtered_out_trade_count": 29,
+      "affected_wallet_count": 3,
+      "total_wallet_count": 3,
+      "rationale": "Losses were concentrated enough that removing 29 trades across 20 flagged tokens, led by HFHMybtPneaeEMrgyuzNLhrxtUBV3MyUqJBr8sc8pump, would have improved PnL by 191.2865116887700000000000001.",
+      "excluded_tokens": [
+        "24HqqUJLosxXeYGuzVTmiDcFcj554cDQUPJqXC6tpump",
+        "2t4EwQVz8f5qzxUBbY4ifDhBCKBKgr6nf2caPG3FRiSE",
+        "3FcbiTV2fgFHrQtPV91hderYtw5gtDthg5gy9MJ1pump",
+        "4d7hkcY3MGAmYRi1vYNaDwi9C5Sfvdi4FqWCiLhtpump",
+        "5y5EG74XyAQwBmYJsYp6Wt7tMqdEFRBa5xJTMNW4BAGS",
+        "6LdwhVdpLSMLWs9VfEefUQWmtdk3MXJwcDWe4Dqfpump",
+        "76hap4pCzcAzJmxAxHJbckzYKkN1rj67xW1ws8n5pump",
+        "7MokUEbY8YkSjkKUgXnBmjUQB67ADCKsG7BEimdBpump",
+        "8Ak4jBMfwdBxvze3DgDcieEBZCP2xjNxrTCfggmkpump",
+        "8sbrrb2Zitcut6LbTRd2i51MUo5CuRmGxSGqaeJibQXB",
+        "CMHnDJSb9Q3rGd629Bw7uwVFjrXUkB2d7NcBU8G3pump",
+        "Csdoc8vo3ryZ9tSiXxWYsZRTKCMmywG5pR8SC47Hab6B",
+        "FCSBSnydDwwsfhmN3LjL6oXX1Khki4yVod7v8oT5pump",
+        "FM7cEUqXbkV2dbUyENA82xMkduUkY1gpbJeMVPhhpump",
+        "Fs3GrN3xc8iC5iCPzGXVv7TJfYSRVq1joamAvq6Cpump",
+        "GHPSby2g1XRgf5TRG3RPE8Z3ARDRn2SUfB6XeQBTbonk",
+        "GQR6mBkGoQS4tV6eRtR3LWFz8PTWuMTr5K7V7x6Lpump",
+        "H4kk15sy2BwEKHT7yWjTKj1r8Dc6V3WuaN8PV6ZXpump",
+        "HFHMybtPneaeEMrgyuzNLhrxtUBV3MyUqJBr8sc8pump",
+        "Hxrn87ryK5vhx4PSrTytV2UZDevCk7VRdJGD2Dpopump"
+      ]
+    },
+    {
+      "rank": 2,
+      "title": "Avoid entries above $5 cost basis",
+      "category": "max cost basis",
+      "scenario_name": "exclude_cost_basis_above_5_usd",
+      "estimated_pnl_improvement_usd": "178.2626952807300000000000001",
+      "estimated_new_realized_pnl_usd": "0.000000",
+      "filtered_out_trade_count": 43,
+      "affected_wallet_count": 3,
+      "total_wallet_count": 3,
+      "rationale": "Removing 43 higher-notional trades would have improved PnL by 178.2626952807300000000000001.",
+      "excluded_tokens": []
+    },
+    {
+      "rank": 3,
+      "title": "Require a minimum hold time of 5m",
+      "category": "hold-time floor",
+      "scenario_name": "exclude_hold_under_5m",
+      "estimated_pnl_improvement_usd": "105.8335215505200000000000002",
+      "estimated_new_realized_pnl_usd": "-72.42917373020999999999999994",
+      "filtered_out_trade_count": 20,
+      "affected_wallet_count": 2,
+      "total_wallet_count": 3,
+      "rationale": "20 trades inside the tested fast-rotation bucket contributed -105.8335215505200000000000000, and removing them would have improved PnL by 105.8335215505200000000000002.",
+      "excluded_tokens": []
+    }
+  ],
+  "next_test_rule_categories": [
+    "daily stop / losing-streak stop: the wallet hit a long losing streak and average PnL after prior losses stayed negative; simulate this next before adopting it."
+  ],
+  "caution_notes": [
+    "These recommendations are retrospective and based on a 3-wallet recent subset, not the full wallet manifest; they may overfit this sample.",
+    "Excluded-trade simulations assume the remaining matched trades are unchanged, which may not hold in live trading.",
+    "Supported-subset caveats, unsupported raw transactions, and skipped FIFO rows remain outside these coaching rules."
+  ]
+}

@@ -1,0 +1,238 @@
+{
+  "manifest_path": "data/wallet_manifest.csv",
+  "filters": {
+    "chain": "solana",
+    "label_filter": null,
+    "group_filter": null,
+    "wallets": [
+      "3rv3sVUvkoLzCWpGGc6DSA9ZJDWBdjCQLB26jLeGchMY",
+      "CcNvTgSzJpN1mUcpnidothDewazN56ZUaAPEZX4o8kPn",
+      "4gT9rv1xGy3NsDJKpaE1nFvARSXBovRsVQuNEWBT11bN"
+    ],
+    "limit_wallets": null,
+    "recent_only": false,
+    "fetch_missing": true,
+    "solana_limit": 10
+  },
+  "report": {
+    "wallet_summaries": [
+      {
+        "wallet": "3rv3sVUvkoLzCWpGGc6DSA9ZJDWBdjCQLB26jLeGchMY",
+        "label": "Axiom 11",
+        "group": "Axiom",
+        "chain": "solana",
+        "status": "excluded_not_meaningful",
+        "included_in_aggregate": false,
+        "message": null,
+        "source_path": "data/raw/solana/Axiom_11/wallet_snapshot_20260329T044003Z.json",
+        "analysis_summary_path": "data/raw/solana/Axiom_11/wallet_snapshot_20260329T044003Z_analysis_summary.json",
+        "realized_pnl_usd": null,
+        "matched_trade_count": 0,
+        "winners_count": 0,
+        "losers_count": 0,
+        "win_rate": null,
+        "holding_time_buckets": [
+          {
+            "bucket": "lt_30s",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "30s_to_lt_60s",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "1m_to_lt_5m",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "5m_to_lt_1h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "1h_to_lt_24h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "ge_24h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          }
+        ],
+        "token_pnl": [],
+        "top_losing_tokens": [],
+        "unsupported_transactions_count": 5,
+        "rows_requiring_valuation_after_count": 26,
+        "unsupported_fifo_transactions_count": 0,
+        "skipped_missing_valuation_count": 26
+      },
+      {
+        "wallet": "4gT9rv1xGy3NsDJKpaE1nFvARSXBovRsVQuNEWBT11bN",
+        "label": "Axiom 10",
+        "group": "Axiom",
+        "chain": "solana",
+        "status": "included_complete",
+        "included_in_aggregate": true,
+        "message": null,
+        "source_path": "data/raw/solana/Axiom_10/wallet_snapshot_20260329T044223Z.json",
+        "analysis_summary_path": "data/raw/solana/Axiom_10/wallet_snapshot_20260329T044223Z_analysis_summary.json",
+        "realized_pnl_usd": "0",
+        "matched_trade_count": 0,
+        "winners_count": 0,
+        "losers_count": 0,
+        "win_rate": null,
+        "holding_time_buckets": [
+          {
+            "bucket": "lt_30s",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "30s_to_lt_60s",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "1m_to_lt_5m",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "5m_to_lt_1h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "1h_to_lt_24h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "ge_24h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          }
+        ],
+        "token_pnl": [],
+        "top_losing_tokens": [],
+        "unsupported_transactions_count": 0,
+        "rows_requiring_valuation_after_count": 0,
+        "unsupported_fifo_transactions_count": 0,
+        "skipped_missing_valuation_count": 0
+      },
+      {
+        "wallet": "CcNvTgSzJpN1mUcpnidothDewazN56ZUaAPEZX4o8kPn",
+        "label": "FOMO 2",
+        "group": "FOMO",
+        "chain": "solana",
+        "status": "excluded_not_meaningful",
+        "included_in_aggregate": false,
+        "message": null,
+        "source_path": "data/raw/solana/FOMO_2/wallet_snapshot_20260329T044136Z.json",
+        "analysis_summary_path": "data/raw/solana/FOMO_2/wallet_snapshot_20260329T044136Z_analysis_summary.json",
+        "realized_pnl_usd": null,
+        "matched_trade_count": 0,
+        "winners_count": 0,
+        "losers_count": 0,
+        "win_rate": null,
+        "holding_time_buckets": [
+          {
+            "bucket": "lt_30s",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "30s_to_lt_60s",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "1m_to_lt_5m",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "5m_to_lt_1h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "1h_to_lt_24h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          },
+          {
+            "bucket": "ge_24h",
+            "trade_count": 0,
+            "total_pnl_usd": "0",
+            "avg_pnl_usd": null
+          }
+        ],
+        "token_pnl": [],
+        "top_losing_tokens": [],
+        "unsupported_transactions_count": 8,
+        "rows_requiring_valuation_after_count": 2,
+        "unsupported_fifo_transactions_count": 0,
+        "skipped_missing_valuation_count": 2
+      }
+    ],
+    "summary": {
+      "analyzed_wallet_count": 3,
+      "included_wallet_count": 1,
+      "included_complete_wallet_count": 1,
+      "included_supported_subset_wallet_count": 0,
+      "excluded_wallet_count": 2,
+      "aggregate_realized_pnl_usd": "0",
+      "aggregate_matched_trade_count": 0,
+      "best_wallets_by_pnl": [
+        {
+          "label": "Axiom 10",
+          "wallet": "4gT9rv1xGy3NsDJKpaE1nFvARSXBovRsVQuNEWBT11bN",
+          "group": "Axiom",
+          "chain": "solana",
+          "realized_pnl_usd": "0",
+          "win_rate": null,
+          "matched_trade_count": 0,
+          "status": "included_complete"
+        }
+      ],
+      "worst_wallets_by_pnl": [
+        {
+          "label": "Axiom 10",
+          "wallet": "4gT9rv1xGy3NsDJKpaE1nFvARSXBovRsVQuNEWBT11bN",
+          "group": "Axiom",
+          "chain": "solana",
+          "realized_pnl_usd": "0",
+          "win_rate": null,
+          "matched_trade_count": 0,
+          "status": "included_complete"
+        }
+      ],
+      "best_wallets_by_win_rate": [],
+      "worst_wallets_by_win_rate": [],
+      "loss_concentration_by_wallet": [],
+      "loss_concentration_by_token": []
+    }
+  }
+}
