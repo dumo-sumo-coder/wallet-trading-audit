@@ -44,6 +44,13 @@ from analytics.portfolio_subset_diagnostics import (  # noqa: E402
     prepare_portfolio_subset_wallet_diagnostics,
     render_portfolio_subset_rules_markdown,
 )
+from analytics.reconciliation import (  # noqa: E402
+    PortfolioReconciliationReport,
+    PortfolioWalletReconciliationSummary,
+    ReconciliationBlockedNotional,
+    WalletReconciliationSummary,
+    build_portfolio_reconciliation_report,
+)
 from analytics.trade_diagnostics import (  # noqa: E402
     MatchedTradeDiagnostic,
     TokenPnlDiagnostic,
@@ -76,6 +83,8 @@ class ManifestPortfolioRun:
     manifest_path: str
     portfolio_summary_json_path: str
     portfolio_summary_csv_path: str
+    portfolio_reconciliation_json_path: str
+    portfolio_reconciliation_csv_path: str
     portfolio_behavior_json_path: str
     portfolio_behavior_csv_path: str
     portfolio_simulation_json_path: str
@@ -229,6 +238,8 @@ def analyze_wallet_manifest_portfolio(
     timestamp_token = generated_at.strftime("%Y%m%dT%H%M%SZ")
     json_path = output_dir / f"manifest_portfolio_{timestamp_token}.json"
     csv_path = output_dir / f"manifest_portfolio_{timestamp_token}.csv"
+    reconciliation_json_path = output_dir / f"manifest_portfolio_{timestamp_token}_reconciliation_report.json"
+    reconciliation_csv_path = output_dir / f"manifest_portfolio_{timestamp_token}_reconciliation_report.csv"
     behavior_json_path = output_dir / f"manifest_portfolio_{timestamp_token}_behavior_report.json"
     behavior_csv_path = output_dir / f"manifest_portfolio_{timestamp_token}_behavior_report.csv"
     simulation_json_path = output_dir / f"manifest_portfolio_{timestamp_token}_simulation_report.json"
@@ -258,6 +269,13 @@ def analyze_wallet_manifest_portfolio(
         report.wallet_summaries,
         repository_root=repository_root,
     )
+    included_wallet_reconciliation_summaries = _load_included_wallet_reconciliation_summaries(
+        report.wallet_summaries,
+        repository_root=repository_root,
+    )
+    portfolio_reconciliation_report = build_portfolio_reconciliation_report(
+        included_wallet_reconciliation_summaries,
+    )
     portfolio_behavior_report = build_portfolio_subset_behavior_report(
         included_wallet_diagnostics,
         portfolio_report=report,
@@ -275,6 +293,11 @@ def analyze_wallet_manifest_portfolio(
         json_path=behavior_json_path,
         csv_path=behavior_csv_path,
     )
+    _write_portfolio_reconciliation_report(
+        portfolio_reconciliation_report,
+        json_path=reconciliation_json_path,
+        csv_path=reconciliation_csv_path,
+    )
     _write_portfolio_subset_simulation_report(
         portfolio_simulation_report,
         json_path=simulation_json_path,
@@ -290,6 +313,14 @@ def analyze_wallet_manifest_portfolio(
         manifest_path=_relative_path_text(manifest_path, repository_root),
         portfolio_summary_json_path=_relative_path_text(json_path, repository_root),
         portfolio_summary_csv_path=_relative_path_text(csv_path, repository_root),
+        portfolio_reconciliation_json_path=_relative_path_text(
+            reconciliation_json_path,
+            repository_root,
+        ),
+        portfolio_reconciliation_csv_path=_relative_path_text(
+            reconciliation_csv_path,
+            repository_root,
+        ),
         portfolio_behavior_json_path=_relative_path_text(behavior_json_path, repository_root),
         portfolio_behavior_csv_path=_relative_path_text(behavior_csv_path, repository_root),
         portfolio_simulation_json_path=_relative_path_text(
@@ -352,6 +383,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Manifest: {run.manifest_path}")
     print(f"Portfolio summary JSON: {run.portfolio_summary_json_path}")
     print(f"Portfolio summary CSV: {run.portfolio_summary_csv_path}")
+    print(f"Portfolio reconciliation JSON: {run.portfolio_reconciliation_json_path}")
+    print(f"Portfolio reconciliation CSV: {run.portfolio_reconciliation_csv_path}")
     print(f"Portfolio behavior JSON: {run.portfolio_behavior_json_path}")
     print(f"Portfolio behavior CSV: {run.portfolio_behavior_csv_path}")
     print(f"Portfolio simulation JSON: {run.portfolio_simulation_json_path}")
@@ -932,6 +965,50 @@ def _load_included_wallet_diagnostics(
     return tuple(included_wallet_diagnostics)
 
 
+def _load_included_wallet_reconciliation_summaries(
+    wallet_summaries: Sequence[PortfolioWalletSummary],
+    *,
+    repository_root: Path,
+) -> tuple[PortfolioWalletReconciliationSummary, ...]:
+    included_wallet_summaries: list[PortfolioWalletReconciliationSummary] = []
+    for wallet_summary in wallet_summaries:
+        if not wallet_summary.included_in_aggregate:
+            continue
+        if wallet_summary.analysis_summary_path is None:
+            continue
+        analysis_summary_path = _resolve_repository_relative_path(
+            wallet_summary.analysis_summary_path,
+            repository_root=repository_root,
+        )
+        reconciliation_report_path = _analysis_summary_to_sibling_path(
+            analysis_summary_path,
+            "_reconciliation_report.json",
+        )
+        reconciliation_summary = _load_wallet_reconciliation_summary(
+            reconciliation_report_path
+        )
+        included_wallet_summaries.append(
+            PortfolioWalletReconciliationSummary(
+                wallet=wallet_summary.wallet,
+                label=wallet_summary.label,
+                group=wallet_summary.group,
+                status=wallet_summary.status,
+                included_in_aggregate=wallet_summary.included_in_aggregate,
+                matched_realized_pnl_usd=reconciliation_summary.matched_realized_pnl_usd,
+                net_capital_flow_usd=reconciliation_summary.net_capital_flow_usd,
+                reconciliation_gap_usd=reconciliation_summary.reconciliation_gap_usd,
+                unmatched_notional_usd=reconciliation_summary.unmatched_notional_usd,
+                unsupported_transaction_count=reconciliation_summary.unsupported_transaction_count,
+                unsupported_notional=reconciliation_summary.unsupported_notional,
+                valuation_blocked_row_count=reconciliation_summary.valuation_blocked_row_count,
+                valuation_blocked_notional=reconciliation_summary.valuation_blocked_notional,
+                open_positions_count=reconciliation_summary.open_positions_count,
+                skipped_fifo_rows_count=reconciliation_summary.skipped_fifo_rows_count,
+            )
+        )
+    return tuple(included_wallet_summaries)
+
+
 def _analysis_summary_to_sibling_path(
     analysis_summary_path: Path,
     suffix: str,
@@ -958,6 +1035,86 @@ def _load_trade_diagnostic_report(path: Path) -> TradeDiagnosticReport:
     return TradeDiagnosticReport(
         matched_trades=matched_trades,
         summary=summarize_trade_diagnostic_report(matched_trades),
+    )
+
+
+def _load_wallet_reconciliation_summary(path: Path) -> WalletReconciliationSummary:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    summary_payload = payload.get("summary")
+    if not isinstance(summary_payload, Mapping):
+        raise ValueError(f"Reconciliation report is missing a 'summary' object: {path}")
+
+    try:
+        return WalletReconciliationSummary(
+            capital_flow_transaction_count=_require_int(
+                summary_payload,
+                "capital_flow_transaction_count",
+            ),
+            unclassified_valued_swap_transaction_count=_require_int(
+                summary_payload,
+                "unclassified_valued_swap_transaction_count",
+            ),
+            total_capital_deployed_usd=_require_decimal(
+                summary_payload,
+                "total_capital_deployed_usd",
+            ),
+            total_capital_returned_usd=_require_decimal(
+                summary_payload,
+                "total_capital_returned_usd",
+            ),
+            net_capital_flow_usd=_require_decimal(summary_payload, "net_capital_flow_usd"),
+            matched_realized_pnl_usd=_optional_decimal(
+                summary_payload.get("matched_realized_pnl_usd")
+            ),
+            matched_cost_basis_usd=_require_decimal(summary_payload, "matched_cost_basis_usd"),
+            matched_proceeds_usd=_require_decimal(summary_payload, "matched_proceeds_usd"),
+            unmatched_deployed_notional_usd=_require_decimal(
+                summary_payload,
+                "unmatched_deployed_notional_usd",
+            ),
+            unmatched_returned_notional_usd=_require_decimal(
+                summary_payload,
+                "unmatched_returned_notional_usd",
+            ),
+            unmatched_notional_usd=_require_decimal(summary_payload, "unmatched_notional_usd"),
+            unsupported_transaction_count=_require_int(
+                summary_payload,
+                "unsupported_transaction_count",
+            ),
+            unsupported_notional=_parse_reconciliation_blocked_notional(
+                summary_payload.get("unsupported_notional"),
+                path=path,
+                field_name="unsupported_notional",
+            ),
+            valuation_blocked_row_count=_require_int(
+                summary_payload,
+                "valuation_blocked_row_count",
+            ),
+            valuation_blocked_notional=_parse_reconciliation_blocked_notional(
+                summary_payload.get("valuation_blocked_notional"),
+                path=path,
+                field_name="valuation_blocked_notional",
+            ),
+            open_positions_count=_require_int(summary_payload, "open_positions_count"),
+            skipped_fifo_rows_count=_require_int(summary_payload, "skipped_fifo_rows_count"),
+            reconciliation_gap_usd=_optional_decimal(summary_payload.get("reconciliation_gap_usd")),
+        )
+    except ValueError as exc:
+        raise ValueError(f"Invalid reconciliation report in {path}: {exc}") from exc
+
+
+def _parse_reconciliation_blocked_notional(
+    value: object,
+    *,
+    path: Path,
+    field_name: str,
+) -> ReconciliationBlockedNotional:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be an object")
+    return ReconciliationBlockedNotional(
+        measured_usd=_require_decimal(value, "measured_usd"),
+        measured_row_count=_require_int(value, "measured_row_count"),
+        unknown_row_count=_require_int(value, "unknown_row_count"),
     )
 
 
@@ -1046,6 +1203,85 @@ def _write_portfolio_subset_behavior_report(
                     "realized_pnl_usd": _csv_value(trade_row.realized_pnl_usd),
                     "outcome": trade_row.outcome,
                     "prior_trade_outcome": trade_row.prior_trade_outcome or "",
+                }
+            )
+
+    return json_path, csv_path
+
+
+def _write_portfolio_reconciliation_report(
+    report: PortfolioReconciliationReport,
+    *,
+    json_path: Path,
+    csv_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=(
+                "wallet",
+                "label",
+                "group",
+                "status",
+                "included_in_aggregate",
+                "matched_realized_pnl_usd",
+                "net_capital_flow_usd",
+                "reconciliation_gap_usd",
+                "unmatched_notional_usd",
+                "unsupported_transaction_count",
+                "unsupported_notional_measured_usd",
+                "unsupported_notional_measured_row_count",
+                "unsupported_notional_unknown_row_count",
+                "valuation_blocked_row_count",
+                "valuation_blocked_notional_measured_usd",
+                "valuation_blocked_notional_measured_row_count",
+                "valuation_blocked_notional_unknown_row_count",
+                "open_positions_count",
+                "skipped_fifo_rows_count",
+            ),
+        )
+        writer.writeheader()
+        for wallet_summary in report.wallet_summaries:
+            writer.writerow(
+                {
+                    "wallet": wallet_summary.wallet,
+                    "label": wallet_summary.label,
+                    "group": wallet_summary.group or "",
+                    "status": wallet_summary.status,
+                    "included_in_aggregate": str(wallet_summary.included_in_aggregate).lower(),
+                    "matched_realized_pnl_usd": _csv_value(
+                        wallet_summary.matched_realized_pnl_usd
+                    ),
+                    "net_capital_flow_usd": str(wallet_summary.net_capital_flow_usd),
+                    "reconciliation_gap_usd": _csv_value(wallet_summary.reconciliation_gap_usd),
+                    "unmatched_notional_usd": str(wallet_summary.unmatched_notional_usd),
+                    "unsupported_transaction_count": wallet_summary.unsupported_transaction_count,
+                    "unsupported_notional_measured_usd": str(
+                        wallet_summary.unsupported_notional.measured_usd
+                    ),
+                    "unsupported_notional_measured_row_count": (
+                        wallet_summary.unsupported_notional.measured_row_count
+                    ),
+                    "unsupported_notional_unknown_row_count": (
+                        wallet_summary.unsupported_notional.unknown_row_count
+                    ),
+                    "valuation_blocked_row_count": wallet_summary.valuation_blocked_row_count,
+                    "valuation_blocked_notional_measured_usd": str(
+                        wallet_summary.valuation_blocked_notional.measured_usd
+                    ),
+                    "valuation_blocked_notional_measured_row_count": (
+                        wallet_summary.valuation_blocked_notional.measured_row_count
+                    ),
+                    "valuation_blocked_notional_unknown_row_count": (
+                        wallet_summary.valuation_blocked_notional.unknown_row_count
+                    ),
+                    "open_positions_count": wallet_summary.open_positions_count,
+                    "skipped_fifo_rows_count": wallet_summary.skipped_fifo_rows_count,
                 }
             )
 

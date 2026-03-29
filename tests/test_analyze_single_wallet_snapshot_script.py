@@ -83,12 +83,14 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
             proposed = temp_path / "wallet_snapshot_20260329T030000Z_proposed_valuations.json"
             trade_report = temp_path / "wallet_snapshot_20260329T040000Z_trade_report.json"
             behavior_report = temp_path / "wallet_snapshot_20260329T050000Z_behavior_report.json"
+            reconciliation_report = temp_path / "wallet_snapshot_20260329T060000Z_reconciliation_report.json"
             older.write_text(json.dumps(snapshot), encoding="utf-8")
             newer.write_text(json.dumps(snapshot), encoding="utf-8")
             summary.write_text(json.dumps({"summary": True}), encoding="utf-8")
             proposed.write_text(json.dumps({"valuations": []}), encoding="utf-8")
             trade_report.write_text(json.dumps({"matched_trades": []}), encoding="utf-8")
             behavior_report.write_text(json.dumps({"trade_rows": []}), encoding="utf-8")
+            reconciliation_report.write_text(json.dumps({"summary": {}}), encoding="utf-8")
 
             latest_path = MODULE.find_latest_snapshot_path(temp_path)
 
@@ -263,6 +265,33 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
                 "Wallet Rules Coaching Report",
                 rules_report_markdown_path.read_text(encoding="utf-8"),
             )
+            reconciliation_report_json_path = (
+                ROOT / analysis.reconciliation_diagnostics.reconciliation_report_json_path
+            )
+            reconciliation_report_csv_path = (
+                ROOT / analysis.reconciliation_diagnostics.reconciliation_report_csv_path
+            )
+            self.assertTrue(reconciliation_report_json_path.exists())
+            self.assertTrue(reconciliation_report_csv_path.exists())
+            reconciliation_payload = json.loads(
+                reconciliation_report_json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                reconciliation_payload["summary"]["total_capital_deployed_usd"],
+                "100",
+            )
+            self.assertEqual(
+                reconciliation_payload["summary"]["total_capital_returned_usd"],
+                "150",
+            )
+            self.assertEqual(
+                reconciliation_payload["summary"]["reconciliation_gap_usd"],
+                "0",
+            )
+            with reconciliation_report_csv_path.open("r", encoding="utf-8", newline="") as handle:
+                reconciliation_rows = list(csv.DictReader(handle))
+            self.assertEqual(len(reconciliation_rows), 1)
+            self.assertEqual(reconciliation_rows[0]["unmatched_notional_usd"], "0")
 
         self.assertEqual(analysis.total_raw_transactions, 2)
         self.assertEqual(analysis.normalized_transactions_count, 2)
@@ -271,6 +300,10 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(analysis.fifo_summary.trade_matches_count, 1)
         self.assertEqual(analysis.fifo_summary.realized_pnl_usd, Decimal("50"))
         self.assertEqual(analysis.fifo_summary.unsupported_fifo_transactions_count, 0)
+        self.assertEqual(
+            analysis.reconciliation_diagnostics.report_summary.net_capital_flow_usd,
+            Decimal("50"),
+        )
 
     def test_analyze_snapshot_reports_fifo_not_meaningful_without_usd_value(self) -> None:
         buy = load_json_fixture("solana_transaction_response_buy_example.json")
@@ -295,6 +328,14 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(analysis.behavior_diagnostics.report_summary.total_matched_trades, 0)
         self.assertEqual(analysis.simulation_diagnostics.report_summary.original_trade_count, 0)
         self.assertEqual(analysis.rules_diagnostics.report_summary.top_candidate_rules, ())
+        self.assertEqual(
+            analysis.reconciliation_diagnostics.report_summary.valuation_blocked_row_count,
+            2,
+        )
+        self.assertEqual(
+            analysis.reconciliation_diagnostics.report_summary.skipped_fifo_rows_count,
+            2,
+        )
         self.assertTrue(
             any(
                 "one wallet" in item or "overfit" in item
