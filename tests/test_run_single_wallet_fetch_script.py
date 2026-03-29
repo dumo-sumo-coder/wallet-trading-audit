@@ -38,6 +38,7 @@ class _SuccessfulClient:
         wallet: str,
         *,
         limit: int = 20,
+        before: str | None = None,
     ) -> dict[str, object]:
         return {
             "wallet": wallet,
@@ -46,7 +47,59 @@ class _SuccessfulClient:
                 "provider": "solana_json_rpc",
                 "rpc_url": self.rpc_url_for_output,
             },
-            "transaction_responses": [{"signature": f"sig-{index}"} for index in range(limit)],
+            "signatures_response": {
+                "result": [{"signature": f"sig-{index}"} for index in range(limit)],
+            },
+            "transaction_responses": [
+                {
+                    "result": {
+                        "blockTime": 1700000000 + index,
+                        "transaction": {"signatures": [f"sig-{index}"]},
+                    }
+                }
+                for index in range(limit)
+            ],
+        }
+
+
+class _PaginatedSuccessfulClient:
+    rpc_url_for_output = "https://mainnet.helius-rpc.com/?redacted"
+
+    def _rpc_request(self, *, method: str, params: list[object]) -> dict[str, object]:
+        return {"jsonrpc": "2.0", "result": {"solana-core": "2.1.0"}, "id": 1}
+
+    def fetch_recent_transaction_history(
+        self,
+        wallet: str,
+        *,
+        limit: int = 20,
+        before: str | None = None,
+    ) -> dict[str, object]:
+        if before is None:
+            signatures = ["sig-3", "sig-2"]
+        elif before == "sig-2":
+            signatures = ["sig-1"]
+        else:
+            signatures = []
+        return {
+            "wallet": wallet,
+            "fetched_at_utc": "2026-03-29T01:15:00+00:00",
+            "source": {
+                "provider": "solana_json_rpc",
+                "rpc_url": self.rpc_url_for_output,
+            },
+            "signatures_response": {
+                "result": [{"signature": signature} for signature in signatures],
+            },
+            "transaction_responses": [
+                {
+                    "result": {
+                        "blockTime": 1700000000 + index,
+                        "transaction": {"signatures": [signature]},
+                    }
+                }
+                for index, signature in enumerate(signatures)
+            ],
         }
 
 
@@ -76,6 +129,8 @@ class RunSingleWalletFetchScriptTests(unittest.TestCase):
                 MODULE.DEFAULT_TEST_WALLET,
                 "--tx-limit",
                 "12",
+                "--max-pages",
+                "3",
                 "--verbose",
                 "--preflight-only",
             ]
@@ -83,6 +138,7 @@ class RunSingleWalletFetchScriptTests(unittest.TestCase):
 
         self.assertEqual(args.wallet, MODULE.DEFAULT_TEST_WALLET)
         self.assertEqual(args.tx_limit, 12)
+        self.assertEqual(args.max_pages, 3)
         self.assertEqual(args.verbose, True)
         self.assertEqual(args.preflight_only, True)
 
@@ -92,6 +148,7 @@ class RunSingleWalletFetchScriptTests(unittest.TestCase):
                 MODULE.run_single_wallet_fetch_workflow(
                     wallet=MODULE.DEFAULT_TEST_WALLET,
                     tx_limit=5,
+                    max_pages=1,
                     preflight_only=True,
                 )
 
@@ -100,6 +157,7 @@ class RunSingleWalletFetchScriptTests(unittest.TestCase):
             result = MODULE.run_single_wallet_fetch_workflow(
                 wallet=MODULE.DEFAULT_TEST_WALLET,
                 tx_limit=5,
+                max_pages=1,
                 preflight_only=True,
                 client=_SuccessfulClient(),
             )
@@ -113,6 +171,7 @@ class RunSingleWalletFetchScriptTests(unittest.TestCase):
             result = MODULE.run_single_wallet_fetch_workflow(
                 wallet=MODULE.DEFAULT_TEST_WALLET,
                 tx_limit=5,
+                max_pages=1,
                 preflight_only=False,
                 client=_ConnectivityFailingClient(),
             )
@@ -130,6 +189,7 @@ class RunSingleWalletFetchScriptTests(unittest.TestCase):
                 result = MODULE.run_single_wallet_fetch_workflow(
                     wallet=MODULE.DEFAULT_TEST_WALLET,
                     tx_limit=3,
+                    max_pages=1,
                     preflight_only=False,
                     repository_root=repository_root,
                     client=_SuccessfulClient(),
@@ -142,9 +202,38 @@ class RunSingleWalletFetchScriptTests(unittest.TestCase):
 
         self.assertEqual(result.connectivity_result.status, "success")
         self.assertEqual(fetch_result.status, "success")
-        self.assertEqual(fetch_result.tx_count, 3)
+        self.assertEqual(fetch_result.total_tx_count, 3)
+        self.assertEqual(fetch_result.total_pages_fetched, 1)
         self.assertEqual(metadata["status"], "success")
-        self.assertEqual(metadata["tx_count"], 3)
+        self.assertEqual(metadata["total_tx_count"], 3)
+        self.assertEqual(metadata["total_pages_fetched"], 1)
+
+    def test_run_workflow_fetches_multiple_pages_and_records_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            with patch.dict(os.environ, {"HELIUS_API_KEY": "loaded-in-shell"}, clear=True):
+                result = MODULE.run_single_wallet_fetch_workflow(
+                    wallet=MODULE.DEFAULT_TEST_WALLET,
+                    tx_limit=2,
+                    max_pages=3,
+                    preflight_only=False,
+                    repository_root=repository_root,
+                    client=_PaginatedSuccessfulClient(),
+                )
+
+            fetch_result = result.fetch_result
+            assert fetch_result is not None
+            metadata = json.loads((repository_root / fetch_result.metadata_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(fetch_result.status, "success")
+        self.assertEqual(fetch_result.total_pages_fetched, 2)
+        self.assertEqual(fetch_result.total_tx_count, 3)
+        self.assertEqual(len(fetch_result.page_snapshot_paths), 2)
+        self.assertEqual(metadata["total_pages_fetched"], 2)
+        self.assertEqual(metadata["total_tx_count"], 3)
+        self.assertEqual(len(metadata["page_snapshot_paths"]), 2)
+        self.assertEqual(metadata["pages"][0]["last_tx_hash"], "sig-2")
+        self.assertEqual(metadata["pages"][1]["before"], "sig-2")
 
 
 if __name__ == "__main__":

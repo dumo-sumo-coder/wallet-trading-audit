@@ -89,6 +89,18 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
 
         self.assertEqual(latest_path.name, newer.name)
 
+    def test_find_latest_fetch_metadata_path_prefers_latest_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            older = temp_path / "wallet_fetch_metadata_20260329T010000Z.json"
+            newer = temp_path / "wallet_fetch_metadata_20260329T020000Z.json"
+            older.write_text(json.dumps({"page_snapshot_paths": []}), encoding="utf-8")
+            newer.write_text(json.dumps({"page_snapshot_paths": []}), encoding="utf-8")
+
+            latest_path = MODULE.find_latest_fetch_metadata_path(temp_path)
+
+        self.assertEqual(latest_path, newer)
+
     def test_analyze_snapshot_groups_unsupported_reasons(self) -> None:
         transfer_in = load_json_fixture("solana_transaction_response_transfer_in_example.json")
         ambiguous_buy = copy.deepcopy(load_json_fixture("solana_transaction_response_buy_example.json"))
@@ -122,6 +134,71 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
             "multiple wallet token balance deltas detected",
             analysis.unsupported_reason_counts[0].reason,
         )
+
+    def test_analyze_fetch_metadata_combines_pages_deduplicates_and_orders_transactions(self) -> None:
+        wallet = load_json_fixture("solana_wallet_snapshot.json")["wallet"]
+        buy = load_json_fixture("solana_transaction_response_buy_example.json")
+        sell = load_json_fixture("solana_transaction_response_sell_example.json")
+
+        older_page = build_snapshot_payload(buy, sell)
+        newer_page = build_snapshot_payload(sell)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            older_page_path = temp_path / "fetch_20260329T040000Z" / "wallet_snapshot_page_002.json"
+            newer_page_path = temp_path / "fetch_20260329T040000Z" / "wallet_snapshot_page_001.json"
+            older_page_path.parent.mkdir(parents=True, exist_ok=True)
+            older_page_path.write_text(json.dumps(older_page), encoding="utf-8")
+            newer_page_path.write_text(json.dumps(newer_page), encoding="utf-8")
+            fetch_metadata_path = temp_path / "wallet_fetch_metadata_20260329T040000Z.json"
+            fetch_metadata_path.write_text(
+                json.dumps(
+                    {
+                        "wallet": wallet,
+                        "page_snapshot_paths": [
+                            newer_page_path.relative_to(ROOT).as_posix()
+                            if newer_page_path.is_relative_to(ROOT)
+                            else str(newer_page_path),
+                            older_page_path.relative_to(ROOT).as_posix()
+                            if older_page_path.is_relative_to(ROOT)
+                            else str(older_page_path),
+                        ],
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            valuation_path = temp_path / "wallet_fetch_metadata_20260329T040000Z_trusted_valuations.json"
+            valuation_path.write_text(
+                json.dumps(
+                    {
+                        "valuations": [
+                            build_trusted_valuation_record(
+                                wallet=wallet,
+                                raw_payload=buy,
+                                usd_value="100",
+                            ),
+                            build_trusted_valuation_record(
+                                wallet=wallet,
+                                raw_payload=sell,
+                                usd_value="150",
+                            ),
+                        ]
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            analysis = MODULE.analyze_fetch_metadata_path(fetch_metadata_path)
+
+        self.assertEqual(analysis.total_raw_transactions, 2)
+        self.assertEqual(analysis.normalized_transactions_count, 2)
+        self.assertEqual(analysis.unsupported_transactions_count, 0)
+        self.assertEqual(analysis.valuation_summary.local_trusted_valuations_applied_count, 2)
+        self.assertEqual(analysis.fifo_summary.trade_matches_count, 1)
+        self.assertEqual(analysis.fifo_summary.realized_pnl_usd, Decimal("50"))
+        self.assertEqual(analysis.fifo_summary.unsupported_fifo_transactions_count, 0)
 
     def test_analyze_snapshot_reports_fifo_not_meaningful_without_usd_value(self) -> None:
         buy = load_json_fixture("solana_transaction_response_buy_example.json")

@@ -7,7 +7,7 @@ import json
 import sys
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -102,6 +102,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional explicit snapshot path. Defaults to the latest test_wallet snapshot.",
     )
     parser.add_argument(
+        "--fetch-metadata-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional explicit multi-page fetch metadata path. When provided, "
+            "all referenced page snapshots are combined before analysis."
+        ),
+    )
+    parser.add_argument(
         "--valuation-path",
         type=Path,
         default=None,
@@ -126,6 +135,35 @@ def find_latest_snapshot_path(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path
     return snapshot_paths[-1]
 
 
+def find_latest_fetch_metadata_path(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path | None:
+    metadata_paths = sorted(snapshot_dir.glob("wallet_fetch_metadata_*.json"))
+    if not metadata_paths:
+        return None
+    return metadata_paths[-1]
+
+
+def analyze_fetch_metadata_path(
+    fetch_metadata_path: Path,
+    *,
+    valuation_path: Path | None = None,
+) -> SingleWalletSnapshotAnalysis:
+    fetch_metadata = load_json_mapping(fetch_metadata_path)
+    combined_snapshot = _combine_snapshot_pages_from_metadata(
+        fetch_metadata,
+        fetch_metadata_path=fetch_metadata_path,
+    )
+    analysis = analyze_snapshot_mapping(
+        combined_snapshot,
+        snapshot_path=fetch_metadata_path,
+        valuation_path=valuation_path,
+    )
+    write_analysis_summary(
+        analysis,
+        summary_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_analysis_summary.json"),
+    )
+    return analysis
+
+
 def analyze_snapshot_path(
     snapshot_path: Path,
     *,
@@ -139,6 +177,73 @@ def analyze_snapshot_path(
     )
     write_analysis_summary(analysis, summary_path=snapshot_path.with_name(f"{snapshot_path.stem}_analysis_summary.json"))
     return analysis
+
+
+def _combine_snapshot_pages_from_metadata(
+    fetch_metadata: Mapping[str, object],
+    *,
+    fetch_metadata_path: Path,
+) -> dict[str, object]:
+    wallet = _require_text(fetch_metadata, "wallet")
+    page_snapshot_paths = fetch_metadata.get("page_snapshot_paths")
+    if not isinstance(page_snapshot_paths, list) or not page_snapshot_paths:
+        raise ValueError("Fetch metadata must contain a non-empty 'page_snapshot_paths' list")
+
+    deduplicated_payloads: list[tuple[datetime, str, int, int, Mapping[str, object]]] = []
+    seen_tx_hashes: set[str] = set()
+
+    for page_index, page_snapshot_path_text in enumerate(page_snapshot_paths):
+        if not isinstance(page_snapshot_path_text, str) or not page_snapshot_path_text.strip():
+            raise ValueError("Fetch metadata page_snapshot_paths entries must be non-empty strings")
+        page_snapshot_path = _resolve_metadata_relative_path(
+            fetch_metadata_path=fetch_metadata_path,
+            relative_or_absolute_path=page_snapshot_path_text,
+        )
+        page_snapshot = load_json_mapping(page_snapshot_path)
+        if _require_text(page_snapshot, "wallet") != wallet:
+            raise ValueError("All snapshot pages in fetch metadata must belong to the same wallet")
+        transaction_responses = page_snapshot.get("transaction_responses")
+        if not isinstance(transaction_responses, list):
+            raise ValueError("Each snapshot page must contain a list at 'transaction_responses'")
+
+        for item_index, payload in enumerate(transaction_responses):
+            if not isinstance(payload, Mapping):
+                raise ValueError("Each Solana transaction response must be an object")
+            tx_hash = _extract_tx_hash(payload)
+            if tx_hash is not None and tx_hash in seen_tx_hashes:
+                continue
+            if tx_hash is not None:
+                seen_tx_hashes.add(tx_hash)
+
+            deduplicated_payloads.append(
+                (
+                    _extract_sortable_block_time(payload),
+                    tx_hash or "",
+                    page_index,
+                    item_index,
+                    payload,
+                )
+            )
+
+    deduplicated_payloads.sort(
+        key=lambda item: (item[0], item[1], item[2], item[3])
+    )
+    combined_responses = [payload for _, _, _, _, payload in deduplicated_payloads]
+    tested_at = fetch_metadata.get("tested_at")
+    if not isinstance(tested_at, str) or not tested_at.strip():
+        tested_at = None
+
+    return {
+        "wallet": wallet,
+        "fetched_at_utc": tested_at,
+        "capture": {
+            "combined_pages": True,
+            "page_count": len(page_snapshot_paths),
+            "deduplicated_by_tx_hash": True,
+            "ordering": "chronological_ascending",
+        },
+        "transaction_responses": combined_responses,
+    }
 
 
 def analyze_snapshot_mapping(
@@ -251,11 +356,24 @@ def write_analysis_summary(
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        snapshot_path = args.snapshot_path or find_latest_snapshot_path()
-        analysis = analyze_snapshot_path(
-            snapshot_path,
-            valuation_path=args.valuation_path,
-        )
+        if args.fetch_metadata_path is not None:
+            analysis = analyze_fetch_metadata_path(
+                args.fetch_metadata_path,
+                valuation_path=args.valuation_path,
+            )
+        else:
+            latest_fetch_metadata_path = find_latest_fetch_metadata_path()
+            if args.snapshot_path is None and latest_fetch_metadata_path is not None:
+                analysis = analyze_fetch_metadata_path(
+                    latest_fetch_metadata_path,
+                    valuation_path=args.valuation_path,
+                )
+            else:
+                snapshot_path = args.snapshot_path or find_latest_snapshot_path()
+                analysis = analyze_snapshot_path(
+                    snapshot_path,
+                    valuation_path=args.valuation_path,
+                )
     except (ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -523,6 +641,27 @@ def _extract_tx_hash(payload: object) -> str | None:
         return None
     trimmed_signature = first_signature.strip()
     return trimmed_signature or None
+
+
+def _extract_sortable_block_time(payload: Mapping[str, object]) -> datetime:
+    result = payload.get("result")
+    if not isinstance(result, Mapping):
+        raise ValueError("Solana transaction response is missing result")
+    block_time = result.get("blockTime")
+    if not isinstance(block_time, (int, float)):
+        raise ValueError("Solana transaction response is missing a numeric blockTime")
+    return datetime.fromtimestamp(block_time, tz=timezone.utc)
+
+
+def _resolve_metadata_relative_path(
+    *,
+    fetch_metadata_path: Path,
+    relative_or_absolute_path: str,
+) -> Path:
+    candidate = Path(relative_or_absolute_path)
+    if candidate.is_absolute():
+        return candidate
+    return ROOT / candidate
 
 
 def _relative_path_text(path: Path) -> str:
