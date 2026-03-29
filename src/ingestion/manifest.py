@@ -141,6 +141,60 @@ def load_wallet_manifest(manifest_path: Path) -> tuple[WalletManifestEntry, ...]
     return tuple(entries)
 
 
+def filter_wallet_manifest_entries(
+    entries: tuple[WalletManifestEntry, ...],
+    *,
+    chain: str | None = None,
+    label_filter: str | None = None,
+    group_filter: str | None = None,
+    wallets: tuple[str, ...] = (),
+) -> tuple[WalletManifestEntry, ...]:
+    """Filter validated manifest entries conservatively."""
+
+    normalized_wallets = {
+        wallet.strip()
+        for wallet in wallets
+        if isinstance(wallet, str) and wallet.strip()
+    }
+    normalized_label_filter = label_filter.lower().strip() if label_filter else None
+    normalized_group_filter = group_filter.lower().strip() if group_filter else None
+
+    filtered_entries: list[WalletManifestEntry] = []
+    for entry in entries:
+        if chain is not None and entry.chain != chain:
+            continue
+        if normalized_wallets and entry.wallet not in normalized_wallets:
+            continue
+        if (
+            normalized_label_filter is not None
+            and normalized_label_filter not in entry.label.lower()
+        ):
+            continue
+        if normalized_group_filter is not None:
+            entry_group = (entry.group or "").lower()
+            if normalized_group_filter not in entry_group:
+                continue
+        filtered_entries.append(entry)
+
+    return tuple(filtered_entries)
+
+
+def manifest_entry_wallet_directory(
+    entry: WalletManifestEntry,
+    *,
+    repository_root: Path,
+) -> Path:
+    """Return the wallet-specific raw-data directory for a manifest entry."""
+
+    return (
+        repository_root
+        / "data"
+        / "raw"
+        / entry.chain
+        / _safe_path_component(entry.label or entry.wallet)
+    )
+
+
 def fetch_from_wallet_manifest(
     manifest_path: Path,
     *,

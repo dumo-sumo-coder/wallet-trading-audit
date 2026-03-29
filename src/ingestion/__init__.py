@@ -9,8 +9,10 @@ from .manifest import (
     ManifestFetchRun,
     ManifestPreflightResult,
     WalletManifestEntry,
+    filter_wallet_manifest_entries,
     fetch_from_wallet_manifest,
     load_wallet_manifest,
+    manifest_entry_wallet_directory,
     preflight_wallet_manifest,
 )
 from .solana import SolanaWalletSource
@@ -33,12 +35,14 @@ __all__ = [
     "RawTransactionSource",
     "SolanaRpcClient",
     "WalletManifestEntry",
+    "filter_wallet_manifest_entries",
     "export_representative_transaction_payloads",
     "fetch_from_wallet_manifest",
     "inspect_solana_snapshot",
     "inspect_solana_transaction_response",
     "load_wallet_manifest",
     "load_json_mapping",
+    "manifest_entry_wallet_directory",
     "preflight_wallet_manifest",
     "SolanaWalletSource",
 ]

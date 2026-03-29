@@ -17,8 +17,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from ingestion.manifest import (  # noqa: E402
+    filter_wallet_manifest_entries,
     fetch_from_wallet_manifest,
     load_wallet_manifest,
+    manifest_entry_wallet_directory,
     preflight_wallet_manifest,
 )
 
@@ -151,6 +153,40 @@ class WalletManifestParsingTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "too many columns"):
                 load_wallet_manifest(manifest_path)
+
+    def test_filter_wallet_manifest_entries_and_wallet_directory_are_consistent(self) -> None:
+        manifest_text = (
+            "wallet,chain,label,group\n"
+            "WalletOne,solana,Recent Alpha,Trading\n"
+            "WalletTwo,solana,Older Beta,Archive\n"
+            "0xabc,bnb_evm,BNB Desk,Trading\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+
+            entries = load_wallet_manifest(manifest_path)
+            filtered = filter_wallet_manifest_entries(
+                entries,
+                chain="solana",
+                label_filter="alpha",
+                group_filter="trad",
+                wallets=("WalletOne", "WalletTwo"),
+            )
+            wallet_directory = manifest_entry_wallet_directory(
+                filtered[0],
+                repository_root=repository_root,
+            )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0].wallet, "WalletOne")
+        self.assertEqual(
+            wallet_directory,
+            repository_root / "data" / "raw" / "solana" / "Recent_Alpha",
+        )
 
 
 class WalletManifestFetchTests(unittest.TestCase):
