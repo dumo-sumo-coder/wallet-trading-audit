@@ -5,10 +5,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import socket
+import ssl
 import sys
 import tempfile
 import unittest
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 from unittest.mock import patch
 
@@ -103,6 +105,38 @@ class SolanaRpcClientTests(unittest.TestCase):
         self.assertEqual(diagnostics["exception_class"], "HTTPError")
         self.assertIn("?redacted", diagnostics["response_snippet"] or "")
         self.assertNotIn("secret-value", diagnostics["response_snippet"] or "")
+
+    def test_rpc_error_diagnostics_classify_tls_failures(self) -> None:
+        client = SolanaRpcClient(rpc_url="https://example.solana.invalid/?api-key=secret-value")
+        tls_error = URLError(
+            ssl.SSLCertVerificationError(
+                1,
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed",
+            )
+        )
+
+        with patch("ingestion.solana_client.urlopen", side_effect=tls_error):
+            with self.assertRaises(Exception) as context:
+                client._rpc_request(method="getVersion", params=[])
+
+        diagnostics = extract_solana_rpc_diagnostics(context.exception)
+        self.assertEqual(diagnostics["failure_category"], "tls_error")
+        self.assertEqual(diagnostics["provider_status"], "ssl_cert_verify_failed")
+        self.assertEqual(diagnostics["rpc_method"], "getVersion")
+        self.assertEqual(diagnostics["exception_class"], "SSLCertVerificationError")
+
+    def test_rpc_error_diagnostics_classify_dns_failures(self) -> None:
+        client = SolanaRpcClient(rpc_url="https://example.solana.invalid/?api-key=secret-value")
+        dns_error = URLError(socket.gaierror(8, "nodename nor servname provided, or not known"))
+
+        with patch("ingestion.solana_client.urlopen", side_effect=dns_error):
+            with self.assertRaises(Exception) as context:
+                client._rpc_request(method="getVersion", params=[])
+
+        diagnostics = extract_solana_rpc_diagnostics(context.exception)
+        self.assertEqual(diagnostics["failure_category"], "dns_error")
+        self.assertEqual(diagnostics["provider_status"], "8")
+        self.assertEqual(diagnostics["exception_class"], "gaierror")
 
     def test_save_recent_transaction_history_writes_under_solana_raw_directory(self) -> None:
         client = SolanaRpcClient(rpc_url="https://example.solana.invalid")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -14,6 +15,10 @@ DOTENV_PATH = REPOSITORY_ROOT / ".env"
 DEFAULT_ENV = "dev"
 DEFAULT_PUBLIC_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com"
 HELIUS_MAINNET_RPC_TEMPLATE = "https://mainnet.helius-rpc.com/?api-key={api_key}"
+KNOWN_CA_BUNDLE_PATHS = (
+    Path("/etc/ssl/cert.pem"),
+    Path("/private/etc/ssl/cert.pem"),
+)
 
 load_dotenv(DOTENV_PATH, override=False)
 
@@ -88,6 +93,24 @@ def get_env_var_status(name: str) -> str:
     """Return a secret-safe status string for one environment variable."""
 
     return "present" if _get_optional_env_var(name) is not None else "missing"
+
+
+def get_tls_ca_bundle_path() -> str | None:
+    """Return a usable CA bundle path for outbound HTTPS requests when available."""
+
+    configured_path = _get_optional_env_var("SSL_CERT_FILE")
+    if configured_path is not None:
+        return configured_path
+
+    default_verify_paths = ssl.get_default_verify_paths()
+    if default_verify_paths.cafile and Path(default_verify_paths.cafile).exists():
+        return default_verify_paths.cafile
+
+    for candidate in KNOWN_CA_BUNDLE_PATHS:
+        if candidate.exists():
+            return str(candidate)
+
+    return None
 
 
 def build_missing_env_message(name: str, *, purpose_text: str) -> str:

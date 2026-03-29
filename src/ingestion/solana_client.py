@@ -7,6 +7,8 @@ normalize transaction fields and it does not preserve HTTP headers.
 from __future__ import annotations
 
 import json
+import socket
+import ssl
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +16,12 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from config import get_solana_rpc_url, sanitize_text_for_output, sanitize_url_for_output
+from config import (
+    get_solana_rpc_url,
+    get_tls_ca_bundle_path,
+    sanitize_text_for_output,
+    sanitize_url_for_output,
+)
 
 SOLANA_PROVIDER_NAME = "solana_json_rpc"
 
@@ -71,6 +78,8 @@ class SolanaRpcClient:
     ) -> None:
         self.rpc_url = rpc_url or get_solana_rpc_url(required=True)
         self.rpc_url_for_output = sanitize_url_for_output(self.rpc_url)
+        self.tls_ca_bundle_path = get_tls_ca_bundle_path()
+        self.ssl_context = _build_ssl_context(self.tls_ca_bundle_path)
         self.timeout_seconds = timeout_seconds
 
     def fetch_recent_transaction_history(
@@ -209,7 +218,11 @@ class SolanaRpcClient:
         )
 
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(
+                request,
+                timeout=self.timeout_seconds,
+                context=self.ssl_context,
+            ) as response:
                 raw_body = response.read().decode("utf-8")
         except HTTPError as exc:
             response_snippet = _read_http_error_snippet(
@@ -230,20 +243,21 @@ class SolanaRpcClient:
                 ),
             ) from exc
         except URLError as exc:
+            failure_category, provider_status, exception_class = _classify_url_error(exc)
             raise SolanaRpcRequestError(
-                f"Solana RPC request failed for method {method}",
+                _build_url_error_message(method=method, failure_category=failure_category),
                 diagnostics=SolanaRpcRequestDiagnostics(
                     provider=SOLANA_PROVIDER_NAME,
                     rpc_url=self.rpc_url_for_output,
                     rpc_method=method,
-                    failure_category="url_error",
-                    provider_status=None,
+                    failure_category=failure_category,
+                    provider_status=provider_status,
                     response_snippet=_sanitize_snippet(
                         str(exc.reason),
                         rpc_url=self.rpc_url,
                         rpc_url_for_output=self.rpc_url_for_output,
                     ),
-                    exception_class=exc.__class__.__name__,
+                    exception_class=exception_class,
                 ),
             ) from exc
 
@@ -327,6 +341,45 @@ def _safe_path_component(value: str) -> str:
         for character in value.strip()
     )
     return cleaned or "wallet"
+
+
+def _build_ssl_context(ca_bundle_path: str | None) -> ssl.SSLContext:
+    if ca_bundle_path is None:
+        return ssl.create_default_context()
+    try:
+        return ssl.create_default_context(cafile=ca_bundle_path)
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        raise ValueError(
+            f"Unable to initialize HTTPS certificate validation from {ca_bundle_path}: "
+            f"{sanitize_text_for_output(str(exc))}"
+        ) from exc
+
+
+def _classify_url_error(exc: URLError) -> tuple[str, str | None, str]:
+    reason = exc.reason
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return ("tls_error", "ssl_cert_verify_failed", reason.__class__.__name__)
+    if isinstance(reason, ssl.SSLError):
+        return ("tls_error", "ssl_error", reason.__class__.__name__)
+    if isinstance(reason, socket.gaierror):
+        status = str(reason.errno) if reason.errno is not None else None
+        return ("dns_error", status, reason.__class__.__name__)
+    if isinstance(reason, TimeoutError):
+        return ("timeout_error", None, reason.__class__.__name__)
+    if isinstance(reason, OSError):
+        status = str(reason.errno) if reason.errno is not None else None
+        return ("network_error", status, reason.__class__.__name__)
+    return ("url_error", None, exc.__class__.__name__)
+
+
+def _build_url_error_message(*, method: str, failure_category: str) -> str:
+    if failure_category == "tls_error":
+        return f"Solana RPC TLS verification failed for method {method}"
+    if failure_category == "dns_error":
+        return f"Solana RPC DNS resolution failed for method {method}"
+    if failure_category == "timeout_error":
+        return f"Solana RPC request timed out for method {method}"
+    return f"Solana RPC request failed for method {method}"
 
 
 def extract_solana_rpc_diagnostics(exc: Exception) -> dict[str, str | None]:

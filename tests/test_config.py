@@ -19,6 +19,7 @@ from config import (  # noqa: E402
     get_etherscan_api_key,
     get_helius_api_key,
     get_solana_rpc_url,
+    get_tls_ca_bundle_path,
     sanitize_url_for_output,
 )
 from ingestion.evm_client import EvmWalletClient  # noqa: E402
@@ -96,6 +97,10 @@ class ConfigTests(unittest.TestCase):
         sanitized = sanitize_url_for_output("https://example.invalid/rpc?api-key=secret-value")
 
         self.assertEqual(sanitized, "https://example.invalid/rpc?redacted")
+
+    def test_get_tls_ca_bundle_path_prefers_explicit_env_override(self) -> None:
+        with patch.dict(os.environ, {"SSL_CERT_FILE": "/tmp/custom-cert.pem"}, clear=True):
+            self.assertEqual(get_tls_ca_bundle_path(), "/tmp/custom-cert.pem")
 
 
 if __name__ == "__main__":
