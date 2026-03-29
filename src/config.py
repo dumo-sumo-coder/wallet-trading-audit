@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -112,6 +113,15 @@ def sanitize_url_for_output(value: str) -> str:
             sanitized_fragment,
         )
     )
+
+
+def sanitize_text_for_output(value: str) -> str:
+    """Redact URL query strings inside arbitrary text."""
+
+    def _replace(match: re.Match[str]) -> str:
+        return sanitize_url_for_output(match.group(0))
+
+    return re.sub(r"https?://[^\s\"']+", _replace, value).strip()
 
 
 def _get_env_var(

@@ -19,7 +19,11 @@ from config import (  # noqa: E402
     get_env_var_status,
     get_manual_env_load_instructions,
 )
-from ingestion.solana_client import SolanaRpcClient  # noqa: E402
+from ingestion.solana_client import (  # noqa: E402
+    SOLANA_PROVIDER_NAME,
+    SolanaRpcClient,
+    extract_solana_rpc_diagnostics,
+)
 
 DEFAULT_TEST_WALLET = "5xKwYXp27dbDxV3UBnk8NWTeEH97sdaufRBA2qdd8X5B"
 DEFAULT_TX_LIMIT = 50
@@ -36,6 +40,7 @@ class SingleWalletTestResult:
     output_directory: str
     snapshot_path: str | None
     metadata_path: str | None
+    diagnostics: dict[str, str | None]
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +57,11 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Validate env and wallet classification without making a live provider call.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print sanitized provider diagnostics for this single-wallet test.",
     )
     return parser.parse_args()
 
@@ -106,6 +116,15 @@ def run_single_wallet_test(
             output_directory=_relative_path_text(output_directory, repository_root),
             snapshot_path=None,
             metadata_path=None,
+            diagnostics={
+                "provider": SOLANA_PROVIDER_NAME,
+                "rpc_url": None,
+                "rpc_method": None,
+                "failure_category": None,
+                "provider_status": None,
+                "response_snippet": None,
+                "exception_class": None,
+            },
         )
 
     fetcher = client or SolanaRpcClient()
@@ -116,6 +135,15 @@ def run_single_wallet_test(
     status = "failure"
     tx_count = 0
     error_message: str | None = None
+    diagnostics: dict[str, str | None] = {
+        "provider": SOLANA_PROVIDER_NAME,
+        "rpc_url": getattr(fetcher, "rpc_url_for_output", None),
+        "rpc_method": None,
+        "failure_category": None,
+        "provider_status": None,
+        "response_snippet": None,
+        "exception_class": None,
+    }
 
     try:
         snapshot = fetcher.fetch_recent_transaction_history(
@@ -129,6 +157,7 @@ def run_single_wallet_test(
         status = "success"
     except Exception as exc:
         error_message = str(exc)
+        diagnostics = extract_solana_rpc_diagnostics(exc)
 
     metadata_path = output_directory / f"wallet_test_metadata_{timestamp_token}.json"
     metadata_payload = {
@@ -139,6 +168,13 @@ def run_single_wallet_test(
         "tx_count": tx_count,
         "status": status,
         "error_message": error_message,
+        "provider": diagnostics["provider"],
+        "rpc_url": diagnostics["rpc_url"],
+        "rpc_method": diagnostics["rpc_method"],
+        "failure_category": diagnostics["failure_category"],
+        "provider_status": diagnostics["provider_status"],
+        "response_snippet": diagnostics["response_snippet"],
+        "exception_class": diagnostics["exception_class"],
         "snapshot_path": (
             _relative_path_text(snapshot_path, repository_root) if snapshot_path is not None else None
         ),
@@ -155,6 +191,7 @@ def run_single_wallet_test(
             _relative_path_text(snapshot_path, repository_root) if snapshot_path is not None else None
         ),
         metadata_path=_relative_path_text(metadata_path, repository_root),
+        diagnostics=diagnostics,
     )
 
 
@@ -184,6 +221,8 @@ def main() -> int:
         print(f"Snapshot path: {result.snapshot_path}")
     if result.metadata_path is not None:
         print(f"Metadata path: {result.metadata_path}")
+    if args.verbose:
+        _print_diagnostics(result.diagnostics)
     if result.status == "dry_run":
         print("Dry run only. No live provider call was made.")
         return 0
@@ -213,6 +252,17 @@ def _relative_path_text(path: Path, repository_root: Path) -> str:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _print_diagnostics(diagnostics: dict[str, str | None]) -> None:
+    print("Provider diagnostics:")
+    print(f"  provider={diagnostics.get('provider')}")
+    print(f"  rpc_url={diagnostics.get('rpc_url')}")
+    print(f"  rpc_method={diagnostics.get('rpc_method')}")
+    print(f"  failure_category={diagnostics.get('failure_category')}")
+    print(f"  provider_status={diagnostics.get('provider_status')}")
+    print(f"  exception_class={diagnostics.get('exception_class')}")
+    print(f"  response_snippet={diagnostics.get('response_snippet')}")
 
 
 if __name__ == "__main__":

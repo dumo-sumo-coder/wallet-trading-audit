@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+from urllib.error import HTTPError
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,7 +18,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from ingestion.evm_client import EvmWalletClient  # noqa: E402
-from ingestion.solana_client import SolanaRpcClient  # noqa: E402
+from ingestion.solana_client import (  # noqa: E402
+    SolanaRpcClient,
+    extract_solana_rpc_diagnostics,
+)
 
 
 class SolanaRpcClientTests(unittest.TestCase):
@@ -74,6 +79,30 @@ class SolanaRpcClientTests(unittest.TestCase):
 
         self.assertEqual(snapshot["source"]["rpc_url"], "https://example.solana.invalid/?redacted")
         self.assertNotIn("secret-value", json.dumps(snapshot))
+
+    def test_rpc_error_diagnostics_include_sanitized_http_details(self) -> None:
+        client = SolanaRpcClient(rpc_url="https://example.solana.invalid/?api-key=secret-value")
+        http_error = HTTPError(
+            client.rpc_url,
+            401,
+            "Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(
+                b'{"error":"bad api key for https://example.solana.invalid/?api-key=secret-value"}'
+            ),
+        )
+
+        with patch("ingestion.solana_client.urlopen", side_effect=http_error):
+            with self.assertRaises(Exception) as context:
+                client._rpc_request(method="getVersion", params=[])
+
+        diagnostics = extract_solana_rpc_diagnostics(context.exception)
+        self.assertEqual(diagnostics["failure_category"], "http_error")
+        self.assertEqual(diagnostics["provider_status"], "401")
+        self.assertEqual(diagnostics["rpc_method"], "getVersion")
+        self.assertEqual(diagnostics["exception_class"], "HTTPError")
+        self.assertIn("?redacted", diagnostics["response_snippet"] or "")
+        self.assertNotIn("secret-value", diagnostics["response_snippet"] or "")
 
     def test_save_recent_transaction_history_writes_under_solana_raw_directory(self) -> None:
         client = SolanaRpcClient(rpc_url="https://example.solana.invalid")

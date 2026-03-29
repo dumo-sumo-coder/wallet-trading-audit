@@ -7,13 +7,40 @@ normalize transaction fields and it does not preserve HTTP headers.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from config import get_solana_rpc_url, sanitize_url_for_output
+from config import get_solana_rpc_url, sanitize_text_for_output, sanitize_url_for_output
+
+SOLANA_PROVIDER_NAME = "solana_json_rpc"
+
+
+@dataclass(frozen=True, slots=True)
+class SolanaRpcRequestDiagnostics:
+    provider: str
+    rpc_url: str
+    rpc_method: str
+    failure_category: str
+    provider_status: str | None
+    response_snippet: str | None
+    exception_class: str
+
+
+class SolanaRpcRequestError(RuntimeError):
+    """Sanitized Solana RPC failure with structured diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: SolanaRpcRequestDiagnostics,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 class SolanaRpcClient:
@@ -110,7 +137,7 @@ class SolanaRpcClient:
             "wallet": wallet_text,
             "fetched_at_utc": fetched_at,
             "source": {
-                "provider": "solana_json_rpc",
+                "provider": SOLANA_PROVIDER_NAME,
                 "rpc_url": self.rpc_url_for_output,
             },
             "capture": {
@@ -185,20 +212,98 @@ class SolanaRpcClient:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 raw_body = response.read().decode("utf-8")
         except HTTPError as exc:
-            raise RuntimeError(
-                f"Solana RPC request failed with HTTP {exc.code} for method {method}"
+            response_snippet = _read_http_error_snippet(
+                exc,
+                rpc_url=self.rpc_url,
+                rpc_url_for_output=self.rpc_url_for_output,
+            )
+            raise SolanaRpcRequestError(
+                f"Solana RPC request failed with HTTP {exc.code} for method {method}",
+                diagnostics=SolanaRpcRequestDiagnostics(
+                    provider=SOLANA_PROVIDER_NAME,
+                    rpc_url=self.rpc_url_for_output,
+                    rpc_method=method,
+                    failure_category="http_error",
+                    provider_status=str(exc.code),
+                    response_snippet=response_snippet,
+                    exception_class=exc.__class__.__name__,
+                ),
             ) from exc
         except URLError as exc:
-            raise RuntimeError(f"Solana RPC request failed for method {method}") from exc
+            raise SolanaRpcRequestError(
+                f"Solana RPC request failed for method {method}",
+                diagnostics=SolanaRpcRequestDiagnostics(
+                    provider=SOLANA_PROVIDER_NAME,
+                    rpc_url=self.rpc_url_for_output,
+                    rpc_method=method,
+                    failure_category="url_error",
+                    provider_status=None,
+                    response_snippet=_sanitize_snippet(
+                        str(exc.reason),
+                        rpc_url=self.rpc_url,
+                        rpc_url_for_output=self.rpc_url_for_output,
+                    ),
+                    exception_class=exc.__class__.__name__,
+                ),
+            ) from exc
 
         try:
             parsed = json.loads(raw_body)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Solana RPC returned invalid JSON for {method}") from exc
+            raise SolanaRpcRequestError(
+                f"Solana RPC returned invalid JSON for {method}",
+                diagnostics=SolanaRpcRequestDiagnostics(
+                    provider=SOLANA_PROVIDER_NAME,
+                    rpc_url=self.rpc_url_for_output,
+                    rpc_method=method,
+                    failure_category="invalid_json",
+                    provider_status=None,
+                    response_snippet=_sanitize_snippet(
+                        raw_body,
+                        rpc_url=self.rpc_url,
+                        rpc_url_for_output=self.rpc_url_for_output,
+                    ),
+                    exception_class=exc.__class__.__name__,
+                ),
+            ) from exc
         if not isinstance(parsed, dict):
-            raise ValueError(f"Solana RPC returned a non-object payload for {method}")
+            raise SolanaRpcRequestError(
+                f"Solana RPC returned a non-object payload for {method}",
+                diagnostics=SolanaRpcRequestDiagnostics(
+                    provider=SOLANA_PROVIDER_NAME,
+                    rpc_url=self.rpc_url_for_output,
+                    rpc_method=method,
+                    failure_category="invalid_payload",
+                    provider_status=None,
+                    response_snippet=_sanitize_snippet(
+                        json.dumps(parsed),
+                        rpc_url=self.rpc_url,
+                        rpc_url_for_output=self.rpc_url_for_output,
+                    ),
+                    exception_class=type(parsed).__name__,
+                ),
+            )
         if "error" in parsed:
-            raise RuntimeError(f"Solana RPC returned an error for {method}: {parsed['error']}")
+            error_payload = parsed["error"]
+            provider_status: str | None = None
+            if isinstance(error_payload, dict) and "code" in error_payload:
+                provider_status = str(error_payload["code"])
+            raise SolanaRpcRequestError(
+                f"Solana RPC returned an error for {method}",
+                diagnostics=SolanaRpcRequestDiagnostics(
+                    provider=SOLANA_PROVIDER_NAME,
+                    rpc_url=self.rpc_url_for_output,
+                    rpc_method=method,
+                    failure_category="rpc_error",
+                    provider_status=provider_status,
+                    response_snippet=_sanitize_snippet(
+                        json.dumps(error_payload),
+                        rpc_url=self.rpc_url,
+                        rpc_url_for_output=self.rpc_url_for_output,
+                    ),
+                    exception_class="JsonRpcError",
+                ),
+            )
         return parsed
 
     def _extract_signature_rows(
@@ -222,3 +327,58 @@ def _safe_path_component(value: str) -> str:
         for character in value.strip()
     )
     return cleaned or "wallet"
+
+
+def extract_solana_rpc_diagnostics(exc: Exception) -> dict[str, str | None]:
+    if isinstance(exc, SolanaRpcRequestError):
+        diagnostics = exc.diagnostics
+        return {
+            "provider": diagnostics.provider,
+            "rpc_url": diagnostics.rpc_url,
+            "rpc_method": diagnostics.rpc_method,
+            "failure_category": diagnostics.failure_category,
+            "provider_status": diagnostics.provider_status,
+            "response_snippet": diagnostics.response_snippet,
+            "exception_class": diagnostics.exception_class,
+        }
+    return {
+        "provider": SOLANA_PROVIDER_NAME,
+        "rpc_url": None,
+        "rpc_method": None,
+        "failure_category": "unexpected_error",
+        "provider_status": None,
+        "response_snippet": sanitize_text_for_output(str(exc)) or None,
+        "exception_class": exc.__class__.__name__,
+    }
+
+
+def _read_http_error_snippet(
+    exc: HTTPError,
+    *,
+    rpc_url: str,
+    rpc_url_for_output: str,
+) -> str | None:
+    try:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+    except Exception:  # pragma: no cover - defensive fallback
+        return None
+    return _sanitize_snippet(
+        raw_body,
+        rpc_url=rpc_url,
+        rpc_url_for_output=rpc_url_for_output,
+    )
+
+
+def _sanitize_snippet(
+    value: str,
+    *,
+    rpc_url: str,
+    rpc_url_for_output: str,
+    limit: int = 240,
+) -> str | None:
+    sanitized = sanitize_text_for_output(value.replace(rpc_url, rpc_url_for_output))
+    if not sanitized:
+        return None
+    if len(sanitized) > limit:
+        return f"{sanitized[:limit].rstrip()}..."
+    return sanitized
