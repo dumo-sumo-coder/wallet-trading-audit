@@ -318,6 +318,53 @@ class AnalyzeWalletManifestPortfolioScriptTests(unittest.TestCase):
         )
         self.assertEqual(run.report.summary.included_wallet_count, 0)
 
+    def test_find_local_analysis_target_falls_back_to_snapshot_when_fetch_metadata_is_single_snapshot_stub(self) -> None:
+        manifest_text = (
+            "wallet,chain,label,group\n"
+            f"{FIXTURE_SOLANA_WALLET},solana,Alpha Wallet,Recent\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+            entry = load_wallet_manifest(manifest_path)[0]
+            wallet_directory = manifest_entry_wallet_directory(
+                entry,
+                repository_root=repository_root,
+            )
+            wallet_directory.mkdir(parents=True, exist_ok=True)
+            snapshot_path = wallet_directory / "wallet_snapshot_20260329T050000Z.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    build_snapshot_payload(
+                        load_json_fixture("solana_transaction_response_transfer_in_example.json"),
+                        wallet=FIXTURE_SOLANA_WALLET,
+                    )
+                ),
+                encoding="utf-8",
+            )
+            metadata_path = wallet_directory / "wallet_fetch_metadata_20260329T050000Z.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "wallet": FIXTURE_SOLANA_WALLET,
+                        "snapshot_path": str(snapshot_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            target = MODULE._find_local_analysis_target(
+                entry,
+                repository_root=repository_root,
+            )
+
+        self.assertIsNotNone(target)
+        self.assertEqual(target.target_type, "snapshot")
+        self.assertEqual(target.path.name, snapshot_path.name)
+
 
 if __name__ == "__main__":
     unittest.main()

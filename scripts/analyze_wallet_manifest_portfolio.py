@@ -459,7 +459,7 @@ def _find_local_analysis_target(
 
     candidate_targets: list[_AnalysisTarget] = []
     fetch_metadata_path = single_wallet_analysis.find_latest_fetch_metadata_path(wallet_directory)
-    if fetch_metadata_path is not None:
+    if fetch_metadata_path is not None and _is_multipage_fetch_metadata(fetch_metadata_path):
         candidate_targets.append(
             _AnalysisTarget(
                 path=fetch_metadata_path,
@@ -532,6 +532,7 @@ def _fetch_missing_solana_snapshot(
                 "fetched_at": fetch_time_text,
                 "status": "success",
                 "snapshot_path": _relative_path_text(snapshot_path, repository_root),
+                "page_snapshot_paths": [_relative_path_text(snapshot_path, repository_root)],
                 "fetch_mode": "manifest_portfolio_fetch_missing",
                 "limit": limit,
             },
@@ -638,6 +639,15 @@ def _timestamp_from_artifact_path(path: Path) -> datetime | None:
     if match is None:
         return None
     return datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+
+
+def _is_multipage_fetch_metadata(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    page_snapshot_paths = payload.get("page_snapshot_paths")
+    return isinstance(page_snapshot_paths, list) and bool(page_snapshot_paths)
 
 
 def _relative_path_text(path: Path, repository_root: Path) -> str:

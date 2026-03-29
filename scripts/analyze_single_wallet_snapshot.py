@@ -52,6 +52,15 @@ from valuation.solana_valuation import (  # noqa: E402
 )
 
 DEFAULT_SNAPSHOT_DIR = ROOT / "data" / "raw" / "solana" / "test_wallet"
+DERIVED_SNAPSHOT_STEM_MARKERS = (
+    "_analysis_summary",
+    "_trusted_valuations",
+    "_proposed_valuations",
+    "_trade_report",
+    "_behavior_report",
+    "_simulation_report",
+    "_rules_report",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,9 +203,7 @@ def find_latest_snapshot_path(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path
     snapshot_paths = sorted(
         path
         for path in snapshot_dir.glob("wallet_snapshot_*.json")
-        if "_analysis_summary" not in path.stem
-        and "_trusted_valuations" not in path.stem
-        and "_proposed_valuations" not in path.stem
+        if not any(marker in path.stem for marker in DERIVED_SNAPSHOT_STEM_MARKERS)
     )
     if not snapshot_paths:
         raise ValueError(f"No wallet snapshots found under {snapshot_dir}")

@@ -81,10 +81,14 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
             newer = temp_path / "wallet_snapshot_20260329T020000Z.json"
             summary = temp_path / "wallet_snapshot_20260329T020000Z_analysis_summary.json"
             proposed = temp_path / "wallet_snapshot_20260329T030000Z_proposed_valuations.json"
+            trade_report = temp_path / "wallet_snapshot_20260329T040000Z_trade_report.json"
+            behavior_report = temp_path / "wallet_snapshot_20260329T050000Z_behavior_report.json"
             older.write_text(json.dumps(snapshot), encoding="utf-8")
             newer.write_text(json.dumps(snapshot), encoding="utf-8")
             summary.write_text(json.dumps({"summary": True}), encoding="utf-8")
             proposed.write_text(json.dumps({"valuations": []}), encoding="utf-8")
+            trade_report.write_text(json.dumps({"matched_trades": []}), encoding="utf-8")
+            behavior_report.write_text(json.dumps({"trade_rows": []}), encoding="utf-8")
 
             latest_path = MODULE.find_latest_snapshot_path(temp_path)
 
