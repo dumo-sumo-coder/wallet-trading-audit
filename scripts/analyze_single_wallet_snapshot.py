@@ -113,7 +113,9 @@ def find_latest_snapshot_path(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path
     snapshot_paths = sorted(
         path
         for path in snapshot_dir.glob("wallet_snapshot_*.json")
-        if "_analysis_summary" not in path.stem and "_trusted_valuations" not in path.stem
+        if "_analysis_summary" not in path.stem
+        and "_trusted_valuations" not in path.stem
+        and "_proposed_valuations" not in path.stem
     )
     if not snapshot_paths:
         raise ValueError(f"No wallet snapshots found under {snapshot_dir}")

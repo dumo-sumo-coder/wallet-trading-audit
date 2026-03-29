@@ -1,5 +1,12 @@
 """Valuation preparation helpers."""
 
+from .sol_usd_lookup import (
+    COINBASE_PRICE_REFERENCE_KIND,
+    SOL_USD_SOURCE_NAME,
+    SolUsdLookupError,
+    SolUsdLookupResult,
+    lookup_sol_usd_at_timestamp,
+)
 from .solana_valuation import (
     VALUATION_STATUS_NEEDS_VALUATION,
     VALUATION_STATUS_PENDING,
@@ -15,9 +22,14 @@ from .solana_valuation import (
 )
 
 __all__ = [
+    "COINBASE_PRICE_REFERENCE_KIND",
+    "SOL_USD_SOURCE_NAME",
+    "SolUsdLookupError",
+    "SolUsdLookupResult",
     "VALUATION_STATUS_NEEDS_VALUATION",
     "VALUATION_STATUS_PENDING",
     "VALUATION_STATUS_TRUSTED",
+    "lookup_sol_usd_at_timestamp",
     "SolanaValuationApplicationResult",
     "SolanaValuationReadinessSummary",
     "SolanaValuationRecord",
