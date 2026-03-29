@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from collections import Counter
@@ -18,10 +19,15 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from ingestion.solana_review import load_json_mapping  # noqa: E402
+from analytics.trade_diagnostics import (  # noqa: E402
+    TradeDiagnosticReport,
+    TradeDiagnosticSummary,
+    build_trade_diagnostic_report,
+)
 from normalize.schema import EventType, NormalizedTransaction  # noqa: E402
 from normalize.transactions import SOLANA_WRAPPED_SOL_MINT, normalize_transaction  # noqa: E402
 from pnl.fifo_engine import InsufficientInventoryError  # noqa: E402
-from pnl.pipeline import run_fifo_pipeline  # noqa: E402
+from pnl.pipeline import FifoPipelineResult, run_fifo_pipeline  # noqa: E402
 from valuation.solana_valuation import (  # noqa: E402
     SolanaValuationRecord,
     apply_trusted_usd_values,
@@ -77,6 +83,13 @@ class SnapshotValuationSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class TradeDiagnosticArtifacts:
+    trade_report_json_path: str
+    trade_report_csv_path: str
+    report_summary: TradeDiagnosticSummary
+
+
+@dataclass(frozen=True, slots=True)
 class SingleWalletSnapshotAnalysis:
     snapshot_path: str
     summary_path: str
@@ -89,6 +102,19 @@ class SingleWalletSnapshotAnalysis:
     unsupported_transactions: tuple[UnsupportedSnapshotTransaction, ...]
     valuation_summary: SnapshotValuationSummary
     fifo_summary: FifoCoverageSummary
+    trade_diagnostics: TradeDiagnosticArtifacts
+
+
+@dataclass(frozen=True, slots=True)
+class _FifoCoverageComputation:
+    summary: FifoCoverageSummary
+    pipeline_result: FifoPipelineResult | None
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotAnalysisComputation:
+    analysis: SingleWalletSnapshotAnalysis
+    trade_report: TradeDiagnosticReport
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -152,14 +178,20 @@ def analyze_fetch_metadata_path(
         fetch_metadata,
         fetch_metadata_path=fetch_metadata_path,
     )
-    analysis = analyze_snapshot_mapping(
+    computation = _analyze_snapshot_mapping_with_report(
         combined_snapshot,
         snapshot_path=fetch_metadata_path,
         valuation_path=valuation_path,
     )
+    analysis = computation.analysis
     write_analysis_summary(
         analysis,
         summary_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_analysis_summary.json"),
+    )
+    write_trade_diagnostic_report(
+        computation.trade_report,
+        json_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_trade_report.json"),
+        csv_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_trade_report.csv"),
     )
     return analysis
 
@@ -170,12 +202,18 @@ def analyze_snapshot_path(
     valuation_path: Path | None = None,
 ) -> SingleWalletSnapshotAnalysis:
     snapshot = load_json_mapping(snapshot_path)
-    analysis = analyze_snapshot_mapping(
+    computation = _analyze_snapshot_mapping_with_report(
         snapshot,
         snapshot_path=snapshot_path,
         valuation_path=valuation_path,
     )
+    analysis = computation.analysis
     write_analysis_summary(analysis, summary_path=snapshot_path.with_name(f"{snapshot_path.stem}_analysis_summary.json"))
+    write_trade_diagnostic_report(
+        computation.trade_report,
+        json_path=snapshot_path.with_name(f"{snapshot_path.stem}_trade_report.json"),
+        csv_path=snapshot_path.with_name(f"{snapshot_path.stem}_trade_report.csv"),
+    )
     return analysis
 
 
@@ -252,6 +290,19 @@ def analyze_snapshot_mapping(
     snapshot_path: Path,
     valuation_path: Path | None = None,
 ) -> SingleWalletSnapshotAnalysis:
+    return _analyze_snapshot_mapping_with_report(
+        snapshot,
+        snapshot_path=snapshot_path,
+        valuation_path=valuation_path,
+    ).analysis
+
+
+def _analyze_snapshot_mapping_with_report(
+    snapshot: Mapping[str, object],
+    *,
+    snapshot_path: Path,
+    valuation_path: Path | None = None,
+) -> _SnapshotAnalysisComputation:
     wallet = _require_text(snapshot, "wallet")
     transaction_responses = snapshot.get("transaction_responses")
     if not isinstance(transaction_responses, list):
@@ -322,22 +373,51 @@ def analyze_snapshot_mapping(
         rows_requiring_valuation_after=readiness_after.rows_requiring_valuation,
         applied_valuation_records=valuation_application_result.applied_records,
     )
-    fifo_summary = _analyze_fifo_coverage(valued_transactions)
+    fifo_computation = _analyze_fifo_coverage(valued_transactions)
+    trade_report = (
+        build_trade_diagnostic_report(fifo_computation.pipeline_result.fifo_result)
+        if fifo_computation.pipeline_result is not None
+        else TradeDiagnosticReport(
+            matched_trades=(),
+            summary=TradeDiagnosticSummary(
+                total_matched_trades=0,
+                winners_count=0,
+                losers_count=0,
+                avg_winner_usd=None,
+                avg_loser_usd=None,
+                largest_win_usd=None,
+                largest_loss_usd=None,
+                pnl_by_token=(),
+            ),
+        )
+    )
 
-    return SingleWalletSnapshotAnalysis(
-        snapshot_path=_relative_path_text(snapshot_path),
-        summary_path=_relative_path_text(
-            snapshot_path.with_name(f"{snapshot_path.stem}_analysis_summary.json")
+    return _SnapshotAnalysisComputation(
+        analysis=SingleWalletSnapshotAnalysis(
+            snapshot_path=_relative_path_text(snapshot_path),
+            summary_path=_relative_path_text(
+                snapshot_path.with_name(f"{snapshot_path.stem}_analysis_summary.json")
+            ),
+            valuation_path=valuation_summary.valuation_path,
+            wallet=wallet,
+            total_raw_transactions=len(transaction_responses),
+            normalized_transactions_count=len(normalized_transactions),
+            unsupported_transactions_count=len(unsupported_transactions),
+            unsupported_reason_counts=unsupported_reason_counts,
+            unsupported_transactions=tuple(unsupported_transactions),
+            valuation_summary=valuation_summary,
+            fifo_summary=fifo_computation.summary,
+            trade_diagnostics=TradeDiagnosticArtifacts(
+                trade_report_json_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_trade_report.json")
+                ),
+                trade_report_csv_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_trade_report.csv")
+                ),
+                report_summary=trade_report.summary,
+            ),
         ),
-        valuation_path=valuation_summary.valuation_path,
-        wallet=wallet,
-        total_raw_transactions=len(transaction_responses),
-        normalized_transactions_count=len(normalized_transactions),
-        unsupported_transactions_count=len(unsupported_transactions),
-        unsupported_reason_counts=unsupported_reason_counts,
-        unsupported_transactions=tuple(unsupported_transactions),
-        valuation_summary=valuation_summary,
-        fifo_summary=fifo_summary,
+        trade_report=trade_report,
     )
 
 
@@ -351,6 +431,61 @@ def write_analysis_summary(
         encoding="utf-8",
     )
     return summary_path
+
+
+def write_trade_diagnostic_report(
+    report: TradeDiagnosticReport,
+    *,
+    json_path: Path,
+    csv_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=(
+                "token_address",
+                "opening_tx_hash",
+                "closing_tx_hash",
+                "open_timestamp",
+                "close_timestamp",
+                "holding_duration_seconds",
+                "quantity_matched",
+                "cost_basis_usd",
+                "proceeds_usd",
+                "realized_pnl_usd",
+                "opening_fee_native",
+                "opening_fee_usd",
+                "closing_fee_native",
+                "closing_fee_usd",
+            ),
+        )
+        writer.writeheader()
+        for matched_trade in report.matched_trades:
+            writer.writerow(
+                {
+                    "token_address": matched_trade.token_address,
+                    "opening_tx_hash": matched_trade.opening_tx_hash,
+                    "closing_tx_hash": matched_trade.closing_tx_hash,
+                    "open_timestamp": matched_trade.open_timestamp.isoformat(),
+                    "close_timestamp": matched_trade.close_timestamp.isoformat(),
+                    "holding_duration_seconds": matched_trade.holding_duration_seconds,
+                    "quantity_matched": str(matched_trade.quantity_matched),
+                    "cost_basis_usd": _csv_value(matched_trade.cost_basis_usd),
+                    "proceeds_usd": _csv_value(matched_trade.proceeds_usd),
+                    "realized_pnl_usd": _csv_value(matched_trade.realized_pnl_usd),
+                    "opening_fee_native": _csv_value(matched_trade.opening_fee_native),
+                    "opening_fee_usd": _csv_value(matched_trade.opening_fee_usd),
+                    "closing_fee_native": _csv_value(matched_trade.closing_fee_native),
+                    "closing_fee_usd": _csv_value(matched_trade.closing_fee_usd),
+                }
+            )
+
+    return json_path, csv_path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -435,12 +570,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Recorded fees: {fifo_summary.recorded_fees_count}")
     if fifo_summary.error is not None:
         print(f"FIFO error: {fifo_summary.error}")
+    trade_diagnostics = analysis.trade_diagnostics
+    print(f"Trade report JSON: {trade_diagnostics.trade_report_json_path}")
+    print(f"Trade report CSV: {trade_diagnostics.trade_report_csv_path}")
+    print(f"Matched trades in report: {trade_diagnostics.report_summary.total_matched_trades}")
+    print(
+        "Winners vs losers: "
+        f"{trade_diagnostics.report_summary.winners_count} / "
+        f"{trade_diagnostics.report_summary.losers_count}"
+    )
+    print(f"Largest win: {trade_diagnostics.report_summary.largest_win_usd}")
+    print(f"Largest loss: {trade_diagnostics.report_summary.largest_loss_usd}")
+    if trade_diagnostics.report_summary.pnl_by_token:
+        print("PnL by token:")
+        for item in trade_diagnostics.report_summary.pnl_by_token[:5]:
+            print(
+                f"  {item.token_address}: "
+                f"{item.realized_pnl_usd} across {item.matched_trades} matched trades"
+            )
     return 0
 
 
 def _analyze_fifo_coverage(
     normalized_transactions: Sequence[NormalizedTransaction],
-) -> FifoCoverageSummary:
+) -> _FifoCoverageComputation:
     skipped_missing_valuation = [
         transaction
         for transaction in normalized_transactions
@@ -456,82 +609,94 @@ def _analyze_fifo_coverage(
         fifo_result, fifo_error, unsupported_fifo_transactions, executed_count = (
             _run_fifo_on_supported_subset(fifo_candidates)
         )
-        return FifoCoverageSummary(
-            status="not_meaningful_missing_valuation",
-            fifo_candidate_transactions_count=len(fifo_candidates),
-            fifo_executed_transactions_count=executed_count,
-            skipped_missing_valuation_count=len(skipped_missing_valuation),
-            skipped_missing_valuation_tx_hashes=tuple(
-                transaction.tx_hash for transaction in skipped_missing_valuation
+        return _FifoCoverageComputation(
+            summary=FifoCoverageSummary(
+                status="not_meaningful_missing_valuation",
+                fifo_candidate_transactions_count=len(fifo_candidates),
+                fifo_executed_transactions_count=executed_count,
+                skipped_missing_valuation_count=len(skipped_missing_valuation),
+                skipped_missing_valuation_tx_hashes=tuple(
+                    transaction.tx_hash for transaction in skipped_missing_valuation
+                ),
+                unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
+                unsupported_fifo_transactions=unsupported_fifo_transactions,
+                realized_pnl_usd=None,
+                trade_matches_count=(
+                    len(fifo_result.fifo_result.trade_matches) if fifo_result is not None else 0
+                ),
+                remaining_positions_count=(
+                    len(fifo_result.remaining_positions) if fifo_result is not None else 0
+                ),
+                recorded_fees_count=(
+                    len(fifo_result.fifo_result.recorded_fees) if fifo_result is not None else 0
+                ),
+                error=fifo_error,
+                meaningful=False,
             ),
-            unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
-            unsupported_fifo_transactions=unsupported_fifo_transactions,
-            realized_pnl_usd=None,
-            trade_matches_count=(
-                len(fifo_result.fifo_result.trade_matches) if fifo_result is not None else 0
-            ),
-            remaining_positions_count=(
-                len(fifo_result.remaining_positions) if fifo_result is not None else 0
-            ),
-            recorded_fees_count=(
-                len(fifo_result.fifo_result.recorded_fees) if fifo_result is not None else 0
-            ),
-            error=fifo_error,
-            meaningful=False,
+            pipeline_result=fifo_result,
         )
 
     if not fifo_candidates:
-        return FifoCoverageSummary(
-            status="not_applicable_no_fifo_rows",
-            fifo_candidate_transactions_count=0,
-            fifo_executed_transactions_count=0,
-            skipped_missing_valuation_count=0,
-            skipped_missing_valuation_tx_hashes=(),
-            unsupported_fifo_transactions_count=0,
-            unsupported_fifo_transactions=(),
-            realized_pnl_usd=Decimal("0"),
-            trade_matches_count=0,
-            remaining_positions_count=0,
-            recorded_fees_count=0,
-            error=None,
-            meaningful=False,
+        return _FifoCoverageComputation(
+            summary=FifoCoverageSummary(
+                status="not_applicable_no_fifo_rows",
+                fifo_candidate_transactions_count=0,
+                fifo_executed_transactions_count=0,
+                skipped_missing_valuation_count=0,
+                skipped_missing_valuation_tx_hashes=(),
+                unsupported_fifo_transactions_count=0,
+                unsupported_fifo_transactions=(),
+                realized_pnl_usd=Decimal("0"),
+                trade_matches_count=0,
+                remaining_positions_count=0,
+                recorded_fees_count=0,
+                error=None,
+                meaningful=False,
+            ),
+            pipeline_result=None,
         )
 
     fifo_result, fifo_error, unsupported_fifo_transactions, executed_count = (
         _run_fifo_on_supported_subset(fifo_candidates)
     )
     if fifo_error is not None:
-        return FifoCoverageSummary(
-            status="error",
+        return _FifoCoverageComputation(
+            summary=FifoCoverageSummary(
+                status="error",
+                fifo_candidate_transactions_count=len(fifo_candidates),
+                fifo_executed_transactions_count=executed_count,
+                skipped_missing_valuation_count=0,
+                skipped_missing_valuation_tx_hashes=(),
+                unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
+                unsupported_fifo_transactions=unsupported_fifo_transactions,
+                realized_pnl_usd=None,
+                trade_matches_count=0,
+                remaining_positions_count=0,
+                recorded_fees_count=0,
+                error=fifo_error,
+                meaningful=False,
+            ),
+            pipeline_result=None,
+        )
+
+    status = "computed_supported_subset" if unsupported_fifo_transactions else "computed"
+    return _FifoCoverageComputation(
+        summary=FifoCoverageSummary(
+            status=status,
             fifo_candidate_transactions_count=len(fifo_candidates),
             fifo_executed_transactions_count=executed_count,
             skipped_missing_valuation_count=0,
             skipped_missing_valuation_tx_hashes=(),
             unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
             unsupported_fifo_transactions=unsupported_fifo_transactions,
-            realized_pnl_usd=None,
-            trade_matches_count=0,
-            remaining_positions_count=0,
-            recorded_fees_count=0,
-            error=fifo_error,
-            meaningful=False,
-        )
-
-    status = "computed_supported_subset" if unsupported_fifo_transactions else "computed"
-    return FifoCoverageSummary(
-        status=status,
-        fifo_candidate_transactions_count=len(fifo_candidates),
-        fifo_executed_transactions_count=executed_count,
-        skipped_missing_valuation_count=0,
-        skipped_missing_valuation_tx_hashes=(),
-        unsupported_fifo_transactions_count=len(unsupported_fifo_transactions),
-        unsupported_fifo_transactions=unsupported_fifo_transactions,
-        realized_pnl_usd=fifo_result.realized_pnl_usd,
-        trade_matches_count=len(fifo_result.fifo_result.trade_matches),
-        remaining_positions_count=len(fifo_result.remaining_positions),
-        recorded_fees_count=len(fifo_result.fifo_result.recorded_fees),
-        error=None,
-        meaningful=True,
+            realized_pnl_usd=fifo_result.realized_pnl_usd,
+            trade_matches_count=len(fifo_result.fifo_result.trade_matches),
+            remaining_positions_count=len(fifo_result.remaining_positions),
+            recorded_fees_count=len(fifo_result.fifo_result.recorded_fees),
+            error=None,
+            meaningful=True,
+        ),
+        pipeline_result=fifo_result,
     )
 
 
@@ -692,6 +857,12 @@ def _jsonify(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _jsonify(item) for key, item in value.items()}
     return value
+
+
+def _csv_value(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    return str(value)
 
 
 if __name__ == "__main__":

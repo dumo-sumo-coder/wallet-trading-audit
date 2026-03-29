@@ -25,6 +25,14 @@ from .performance import (
     build_closed_trade_performance_rows,
     summarize_closed_trade_performance,
 )
+from .trade_diagnostics import (
+    MatchedTradeDiagnostic,
+    TokenPnlDiagnostic,
+    TradeDiagnosticReport,
+    TradeDiagnosticSummary,
+    build_trade_diagnostic_report,
+    summarize_trade_diagnostic_report,
+)
 
 __all__ = [
     "ClosedTradePerformance",
@@ -46,4 +54,10 @@ __all__ = [
     "analyze_fifo_trade_performance",
     "build_closed_trade_performance_rows",
     "summarize_closed_trade_performance",
+    "MatchedTradeDiagnostic",
+    "TokenPnlDiagnostic",
+    "TradeDiagnosticReport",
+    "TradeDiagnosticSummary",
+    "build_trade_diagnostic_report",
+    "summarize_trade_diagnostic_report",
 ]

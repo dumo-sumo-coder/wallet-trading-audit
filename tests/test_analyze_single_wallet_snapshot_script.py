@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import csv
 import importlib.util
 import json
 import sys
@@ -192,6 +193,21 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
 
             analysis = MODULE.analyze_fetch_metadata_path(fetch_metadata_path)
 
+            self.assertEqual(analysis.trade_diagnostics.report_summary.total_matched_trades, 1)
+            self.assertEqual(analysis.trade_diagnostics.report_summary.winners_count, 1)
+            self.assertEqual(analysis.trade_diagnostics.report_summary.losers_count, 0)
+            trade_report_json_path = ROOT / analysis.trade_diagnostics.trade_report_json_path
+            trade_report_csv_path = ROOT / analysis.trade_diagnostics.trade_report_csv_path
+            self.assertTrue(trade_report_json_path.exists())
+            self.assertTrue(trade_report_csv_path.exists())
+            trade_report_payload = json.loads(trade_report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(trade_report_payload["matched_trades"]), 1)
+            self.assertEqual(trade_report_payload["summary"]["largest_win_usd"], "50")
+            with trade_report_csv_path.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["realized_pnl_usd"], "50")
+
         self.assertEqual(analysis.total_raw_transactions, 2)
         self.assertEqual(analysis.normalized_transactions_count, 2)
         self.assertEqual(analysis.unsupported_transactions_count, 0)
@@ -219,6 +235,7 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(analysis.fifo_summary.skipped_missing_valuation_count, 2)
         self.assertEqual(analysis.fifo_summary.realized_pnl_usd, None)
         self.assertEqual(analysis.fifo_summary.meaningful, False)
+        self.assertEqual(analysis.trade_diagnostics.report_summary.total_matched_trades, 0)
 
     def test_analyze_snapshot_applies_local_trusted_valuations_and_enables_fifo(self) -> None:
         buy = load_json_fixture("solana_transaction_response_buy_example.json")
@@ -252,6 +269,26 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
             )
 
             analysis = MODULE.analyze_snapshot_path(snapshot_path)
+
+            self.assertEqual(analysis.trade_diagnostics.report_summary.total_matched_trades, 1)
+            self.assertEqual(analysis.trade_diagnostics.report_summary.winners_count, 1)
+            self.assertEqual(analysis.trade_diagnostics.report_summary.losers_count, 0)
+            self.assertEqual(analysis.trade_diagnostics.report_summary.largest_win_usd, Decimal("50"))
+            self.assertIsNone(analysis.trade_diagnostics.report_summary.largest_loss_usd)
+            trade_report_json_path = temp_path / "wallet_snapshot_20260329T030000Z_trade_report.json"
+            trade_report_csv_path = temp_path / "wallet_snapshot_20260329T030000Z_trade_report.csv"
+            self.assertTrue(trade_report_json_path.exists())
+            self.assertTrue(trade_report_csv_path.exists())
+            trade_report_payload = json.loads(trade_report_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(trade_report_payload["summary"]["total_matched_trades"], 1)
+            self.assertEqual(
+                trade_report_payload["matched_trades"][0]["opening_tx_hash"],
+                "5uyM8JpVQCBq9x3AjC8nH9fYH5x7c3qvKc6PjH9Tn7rR7hTj6yV7iM6m2T9g7Z6dQwL7jVn4pQy3mK8sR1n4bUy",
+            )
+            self.assertEqual(
+                trade_report_payload["matched_trades"][0]["closing_tx_hash"],
+                "3eQFvN6wL8tH7bQ2pK9sR6cW1xY5mJ4uT8nP2qV7zA3sD5fG6hJ8kL2mN4pR6tU8wY1qC3eF5gH7jK9mP2sV4w",
+            )
 
         self.assertEqual(
             analysis.valuation_summary.local_trusted_valuation_records_count,
