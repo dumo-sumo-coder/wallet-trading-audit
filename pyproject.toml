@@ -16,4 +16,4 @@ py-modules = ["config"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["ingestion*", "normalize*", "pnl*", "analytics*", "reports*"]
+include = ["ingestion*", "normalize*", "pnl*", "analytics*", "reports*", "valuation*"]

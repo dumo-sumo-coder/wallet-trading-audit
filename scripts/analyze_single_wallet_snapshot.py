@@ -21,6 +21,13 @@ from ingestion.solana_review import load_json_mapping  # noqa: E402
 from normalize.schema import EventType, NormalizedTransaction  # noqa: E402
 from normalize.transactions import normalize_transaction  # noqa: E402
 from pnl.pipeline import run_fifo_pipeline  # noqa: E402
+from valuation.solana_valuation import (  # noqa: E402
+    SolanaValuationRecord,
+    apply_trusted_usd_values,
+    find_local_trusted_valuation_path,
+    load_trusted_valuation_records,
+    summarize_valuation_readiness,
+)
 
 DEFAULT_SNAPSHOT_DIR = ROOT / "data" / "raw" / "solana" / "test_wallet"
 
@@ -53,15 +60,30 @@ class FifoCoverageSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SnapshotValuationSummary:
+    valuation_path: str | None
+    local_trusted_valuation_records_count: int
+    local_trusted_valuations_applied_count: int
+    swap_rows_total: int
+    swap_rows_already_valued_count: int
+    rows_requiring_valuation_before_count: int
+    rows_requiring_valuation_after_count: int
+    rows_requiring_valuation_after: tuple[SolanaValuationRecord, ...]
+    applied_valuation_records: tuple[SolanaValuationRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SingleWalletSnapshotAnalysis:
     snapshot_path: str
     summary_path: str
+    valuation_path: str | None
     wallet: str
     total_raw_transactions: int
     normalized_transactions_count: int
     unsupported_transactions_count: int
     unsupported_reason_counts: tuple[UnsupportedReasonCount, ...]
     unsupported_transactions: tuple[UnsupportedSnapshotTransaction, ...]
+    valuation_summary: SnapshotValuationSummary
     fifo_summary: FifoCoverageSummary
 
 
@@ -75,21 +97,39 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional explicit snapshot path. Defaults to the latest test_wallet snapshot.",
     )
+    parser.add_argument(
+        "--valuation-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional explicit trusted valuation file. Defaults to a sibling "
+            "'*_trusted_valuations.json' file when present."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def find_latest_snapshot_path(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path:
-    snapshot_paths = sorted(snapshot_dir.glob("wallet_snapshot_*.json"))
+    snapshot_paths = sorted(
+        path
+        for path in snapshot_dir.glob("wallet_snapshot_*.json")
+        if "_analysis_summary" not in path.stem and "_trusted_valuations" not in path.stem
+    )
     if not snapshot_paths:
         raise ValueError(f"No wallet snapshots found under {snapshot_dir}")
     return snapshot_paths[-1]
 
 
-def analyze_snapshot_path(snapshot_path: Path) -> SingleWalletSnapshotAnalysis:
+def analyze_snapshot_path(
+    snapshot_path: Path,
+    *,
+    valuation_path: Path | None = None,
+) -> SingleWalletSnapshotAnalysis:
     snapshot = load_json_mapping(snapshot_path)
     analysis = analyze_snapshot_mapping(
         snapshot,
         snapshot_path=snapshot_path,
+        valuation_path=valuation_path,
     )
     write_analysis_summary(analysis, summary_path=snapshot_path.with_name(f"{snapshot_path.stem}_analysis_summary.json"))
     return analysis
@@ -99,6 +139,7 @@ def analyze_snapshot_mapping(
     snapshot: Mapping[str, object],
     *,
     snapshot_path: Path,
+    valuation_path: Path | None = None,
 ) -> SingleWalletSnapshotAnalysis:
     wallet = _require_text(snapshot, "wallet")
     transaction_responses = snapshot.get("transaction_responses")
@@ -140,20 +181,51 @@ def analyze_snapshot_mapping(
 
         normalized_transactions.append(normalized)
 
+    resolved_valuation_path = valuation_path or find_local_trusted_valuation_path(snapshot_path)
+    trusted_valuation_records = (
+        load_trusted_valuation_records(resolved_valuation_path)
+        if resolved_valuation_path is not None
+        else ()
+    )
+    readiness_before = summarize_valuation_readiness(normalized_transactions)
+    valuation_application_result = apply_trusted_usd_values(
+        normalized_transactions,
+        trusted_valuation_records,
+    )
+    valued_transactions = valuation_application_result.transactions
+    readiness_after = summarize_valuation_readiness(valued_transactions)
+
     unsupported_reason_counts = _group_unsupported_reasons(unsupported_transactions)
-    fifo_summary = _analyze_fifo_coverage(normalized_transactions)
+    valuation_summary = SnapshotValuationSummary(
+        valuation_path=(
+            _relative_path_text(resolved_valuation_path)
+            if resolved_valuation_path is not None
+            else None
+        ),
+        local_trusted_valuation_records_count=len(trusted_valuation_records),
+        local_trusted_valuations_applied_count=len(valuation_application_result.applied_records),
+        swap_rows_total=readiness_before.swap_transactions,
+        swap_rows_already_valued_count=readiness_before.swap_rows_already_valued_count,
+        rows_requiring_valuation_before_count=readiness_before.rows_requiring_valuation_count,
+        rows_requiring_valuation_after_count=readiness_after.rows_requiring_valuation_count,
+        rows_requiring_valuation_after=readiness_after.rows_requiring_valuation,
+        applied_valuation_records=valuation_application_result.applied_records,
+    )
+    fifo_summary = _analyze_fifo_coverage(valued_transactions)
 
     return SingleWalletSnapshotAnalysis(
         snapshot_path=_relative_path_text(snapshot_path),
         summary_path=_relative_path_text(
             snapshot_path.with_name(f"{snapshot_path.stem}_analysis_summary.json")
         ),
+        valuation_path=valuation_summary.valuation_path,
         wallet=wallet,
         total_raw_transactions=len(transaction_responses),
         normalized_transactions_count=len(normalized_transactions),
         unsupported_transactions_count=len(unsupported_transactions),
         unsupported_reason_counts=unsupported_reason_counts,
         unsupported_transactions=tuple(unsupported_transactions),
+        valuation_summary=valuation_summary,
         fifo_summary=fifo_summary,
     )
 
@@ -174,8 +246,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         snapshot_path = args.snapshot_path or find_latest_snapshot_path()
-        analysis = analyze_snapshot_path(snapshot_path)
-    except ValueError as exc:
+        analysis = analyze_snapshot_path(
+            snapshot_path,
+            valuation_path=args.valuation_path,
+        )
+    except (ValueError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
@@ -191,6 +266,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         for item in analysis.unsupported_reason_counts[:5]:
             print(f"  {item.count} x {item.reason}")
+
+    valuation_summary = analysis.valuation_summary
+    print(f"Valuation file: {analysis.valuation_path or 'none'}")
+    print(f"Swap rows total: {valuation_summary.swap_rows_total}")
+    print(
+        "Swap rows already valued: "
+        f"{valuation_summary.swap_rows_already_valued_count}"
+    )
+    print(
+        "Rows requiring valuation before local file: "
+        f"{valuation_summary.rows_requiring_valuation_before_count}"
+    )
+    print(
+        "Local trusted valuation records applied: "
+        f"{valuation_summary.local_trusted_valuations_applied_count}"
+    )
+    print(
+        "Rows still requiring valuation after local file: "
+        f"{valuation_summary.rows_requiring_valuation_after_count}"
+    )
 
     fifo_summary = analysis.fifo_summary
     print(f"FIFO status: {fifo_summary.status}")
