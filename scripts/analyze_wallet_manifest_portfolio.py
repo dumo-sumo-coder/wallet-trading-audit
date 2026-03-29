@@ -31,6 +31,7 @@ from analytics.manifest_portfolio import (  # noqa: E402
     STATUS_EXCLUDED_UNSUPPORTED_CHAIN,
     STATUS_INCLUDED_COMPLETE,
     STATUS_INCLUDED_SUPPORTED_SUBSET,
+    UnsupportedCasePatternCount,
     build_manifest_portfolio_report,
 )
 from analytics.trade_diagnostics import TokenPnlDiagnostic  # noqa: E402
@@ -43,6 +44,12 @@ from ingestion.manifest import (  # noqa: E402
     manifest_entry_wallet_directory,
 )
 from ingestion.solana_client import SolanaRpcClient  # noqa: E402
+from valuation.solana_valuation import (  # noqa: E402
+    load_valuation_records,
+    merge_valuation_records,
+    populate_wrapped_sol_trusted_values,
+    write_valuation_records,
+)
 
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "reports" / "portfolio"
 SUPPORTED_ANALYSIS_CHAINS = frozenset({"solana"})
@@ -353,6 +360,7 @@ def _analyze_manifest_entry(
             rows_requiring_valuation_after_count=None,
             unsupported_fifo_transactions_count=None,
             skipped_missing_valuation_count=None,
+            unsupported_patterns=(),
         )
 
     analysis_target = _find_local_analysis_target(entry, repository_root=repository_root)
@@ -399,13 +407,15 @@ def _analyze_manifest_entry(
             rows_requiring_valuation_after_count=None,
             unsupported_fifo_transactions_count=None,
             skipped_missing_valuation_count=None,
+            unsupported_patterns=(),
         )
 
     try:
-        if analysis_target.target_type == "fetch_metadata":
-            analysis = single_wallet_analysis.analyze_fetch_metadata_path(analysis_target.path)
-        else:
-            analysis = single_wallet_analysis.analyze_snapshot_path(analysis_target.path)
+        analysis = _analyze_single_wallet_target(analysis_target)
+        analysis = _auto_prepare_and_apply_wrapped_sol_valuations(
+            analysis_target,
+            analysis,
+        )
     except (ValueError, OSError) as exc:
         return PortfolioWalletSummary(
             wallet=entry.wallet,
@@ -429,6 +439,7 @@ def _analyze_manifest_entry(
             rows_requiring_valuation_after_count=None,
             unsupported_fifo_transactions_count=None,
             skipped_missing_valuation_count=None,
+            unsupported_patterns=(),
         )
 
     included_in_aggregate = analysis.fifo_summary.meaningful
@@ -481,6 +492,9 @@ def _analyze_manifest_entry(
             analysis.fifo_summary.unsupported_fifo_transactions_count
         ),
         skipped_missing_valuation_count=analysis.fifo_summary.skipped_missing_valuation_count,
+        unsupported_patterns=_build_unsupported_patterns(
+            analysis.unsupported_reason_counts
+        ),
     )
 
 
@@ -635,6 +649,88 @@ def _fetch_solana_history(
     )
 
 
+def _analyze_single_wallet_target(
+    analysis_target: _AnalysisTarget,
+    *,
+    valuation_path: Path | None = None,
+) -> single_wallet_analysis.SingleWalletSnapshotAnalysis:
+    if analysis_target.target_type == "fetch_metadata":
+        return single_wallet_analysis.analyze_fetch_metadata_path(
+            analysis_target.path,
+            valuation_path=valuation_path,
+        )
+    return single_wallet_analysis.analyze_snapshot_path(
+        analysis_target.path,
+        valuation_path=valuation_path,
+    )
+
+
+def _auto_prepare_and_apply_wrapped_sol_valuations(
+    analysis_target: _AnalysisTarget,
+    analysis: single_wallet_analysis.SingleWalletSnapshotAnalysis,
+) -> single_wallet_analysis.SingleWalletSnapshotAnalysis:
+    rows_requiring_valuation = analysis.valuation_summary.rows_requiring_valuation_after
+    if not rows_requiring_valuation:
+        return analysis
+
+    valuation_path = analysis_target.path.with_name(
+        f"{analysis_target.path.stem}_trusted_valuations.json"
+    )
+    existing_records = (
+        load_valuation_records(valuation_path, include_all_statuses=True)
+        if valuation_path.exists()
+        else ()
+    )
+    merged_records = merge_valuation_records(existing_records, rows_requiring_valuation)
+    populated_records = populate_wrapped_sol_trusted_values(merged_records)
+
+    if not valuation_path.exists() or populated_records.records != existing_records:
+        write_valuation_records(valuation_path, populated_records.records)
+
+    if populated_records.trusted_rows_populated <= 0:
+        return analysis
+    return _analyze_single_wallet_target(analysis_target, valuation_path=valuation_path)
+
+
+def _build_unsupported_patterns(
+    unsupported_reason_counts: Sequence[object],
+) -> tuple[UnsupportedCasePatternCount, ...]:
+    pattern_totals: dict[tuple[str, str], int] = {}
+    for item in unsupported_reason_counts:
+        reason = getattr(item, "reason", None)
+        count = getattr(item, "count", None)
+        if not isinstance(reason, str) or not isinstance(count, int):
+            continue
+        pattern_key, label = _unsupported_pattern_from_reason(reason)
+        pattern_totals[(pattern_key, label)] = pattern_totals.get((pattern_key, label), 0) + count
+
+    ranked_patterns = sorted(
+        pattern_totals.items(),
+        key=lambda item: (-item[1], item[0][1], item[0][0]),
+    )
+    return tuple(
+        UnsupportedCasePatternCount(
+            pattern_key=pattern_key,
+            label=label,
+            count=count,
+        )
+        for (pattern_key, label), count in ranked_patterns
+    )
+
+
+def _unsupported_pattern_from_reason(reason: str) -> tuple[str, str]:
+    normalized_reason = reason.lower()
+    if "failed transactions are out of scope" in normalized_reason:
+        return ("failed_transactions", "failed_transactions")
+    if "multiple wallet token balance deltas detected" in normalized_reason:
+        return ("multiple_token_deltas", "multiple_token_deltas_or_multi_leg")
+    if "token inflow with net sol inflow is ambiguous" in normalized_reason:
+        return ("token_and_sol_inflow", "token_and_sol_inflow")
+    if "token outflow with net sol outflow is ambiguous" in normalized_reason:
+        return ("token_and_sol_outflow", "token_and_sol_outflow")
+    return ("other_unsupported", "other_unsupported")
+
+
 def _write_manifest_portfolio_report(
     report: ManifestPortfolioReport,
     *,
@@ -679,6 +775,7 @@ def _write_manifest_portfolio_report(
                 "rows_requiring_valuation_after_count",
                 "unsupported_fifo_transactions_count",
                 "skipped_missing_valuation_count",
+                "unsupported_patterns",
                 "top_losing_tokens",
                 "message",
             ),
@@ -711,6 +808,9 @@ def _write_manifest_portfolio_report(
                     ),
                     "skipped_missing_valuation_count": _csv_value(
                         wallet_summary.skipped_missing_valuation_count
+                    ),
+                    "unsupported_patterns": ",".join(
+                        f"{item.label}:{item.count}" for item in wallet_summary.unsupported_patterns
                     ),
                     "top_losing_tokens": ",".join(
                         item.token_address for item in wallet_summary.top_losing_tokens

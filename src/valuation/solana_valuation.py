@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from normalize.schema import Chain, EventType, NormalizedTransaction
+from .sol_usd_lookup import SolUsdLookupError, lookup_sol_usd_at_timestamp
 
 VALUATION_STATUS_NEEDS_VALUATION = "needs_valuation"
 VALUATION_STATUS_PENDING = "pending"
 VALUATION_STATUS_TRUSTED = "trusted"
+SOLANA_WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +89,17 @@ class SolanaValuationApplicationResult:
 
     transactions: tuple[NormalizedTransaction, ...]
     applied_records: tuple[SolanaValuationRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WrappedSolTrustedValuationPopulationResult:
+    """Result of auto-populating wrapped-SOL valuation records."""
+
+    records: tuple[SolanaValuationRecord, ...]
+    wrapped_sol_rows: int
+    trusted_rows_populated: int
+    skipped_existing_trusted_rows: int
+    failed_lookup_rows: int
 
 
 def get_rows_requiring_valuation(
@@ -195,6 +208,20 @@ def load_trusted_valuation_records(path: Path) -> tuple[SolanaValuationRecord, .
     they are completed with `valuation_status="trusted"`.
     """
 
+    return load_valuation_records(path, include_all_statuses=False)
+
+
+def load_valuation_records(
+    path: Path,
+    *,
+    include_all_statuses: bool = False,
+) -> tuple[SolanaValuationRecord, ...]:
+    """Load valuation records from disk.
+
+    By default, only `trusted` rows are returned so existing FIFO behavior
+    stays unchanged. Portfolio/template workflows can request all statuses.
+    """
+
     parsed = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(parsed, Mapping):
         raw_records = parsed.get("valuations")
@@ -207,8 +234,123 @@ def load_trusted_valuation_records(path: Path) -> tuple[SolanaValuationRecord, .
         )
 
     parsed_records = tuple(_parse_valuation_record(item) for item in raw_records)
+    if include_all_statuses:
+        return parsed_records
     return tuple(
         record for record in parsed_records if record.valuation_status == VALUATION_STATUS_TRUSTED
+    )
+
+
+def build_pending_valuation_records(
+    rows_requiring_valuation: Sequence[SolanaValuationRecord],
+) -> tuple[SolanaValuationRecord, ...]:
+    """Convert in-memory needs-valuation rows into persisted pending rows."""
+
+    return tuple(
+        replace(
+            record,
+            valuation_source=None,
+            usd_value=None,
+            valuation_status=VALUATION_STATUS_PENDING,
+        )
+        for record in rows_requiring_valuation
+    )
+
+
+def merge_valuation_records(
+    existing_records: Sequence[SolanaValuationRecord],
+    required_rows: Sequence[SolanaValuationRecord],
+) -> tuple[SolanaValuationRecord, ...]:
+    """Merge pending/trusted valuation rows while preserving strict identity fields."""
+
+    merged_by_tx_hash: dict[str, SolanaValuationRecord] = {}
+    ordered_tx_hashes: list[str] = []
+
+    for record in existing_records:
+        if record.tx_hash in merged_by_tx_hash:
+            raise ValueError(f"Duplicate valuation record for tx_hash: {record.tx_hash}")
+        merged_by_tx_hash[record.tx_hash] = record
+        ordered_tx_hashes.append(record.tx_hash)
+
+    for pending_record in build_pending_valuation_records(required_rows):
+        existing_record = merged_by_tx_hash.get(pending_record.tx_hash)
+        if existing_record is None:
+            merged_by_tx_hash[pending_record.tx_hash] = pending_record
+            ordered_tx_hashes.append(pending_record.tx_hash)
+            continue
+        _validate_records_share_identity(existing_record, pending_record)
+
+    return tuple(merged_by_tx_hash[tx_hash] for tx_hash in ordered_tx_hashes)
+
+
+def write_valuation_records(
+    path: Path,
+    valuation_records: Sequence[SolanaValuationRecord],
+) -> Path:
+    """Persist valuation records in the repo's auditable JSON shape."""
+
+    payload = {
+        "valuations": [_valuation_record_to_json(record) for record in valuation_records]
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def populate_wrapped_sol_trusted_values(
+    valuation_records: Sequence[SolanaValuationRecord],
+    *,
+    overwrite_existing: bool = False,
+    lookup_fn: Callable[[datetime], object] = lookup_sol_usd_at_timestamp,
+) -> WrappedSolTrustedValuationPopulationResult:
+    """Populate trusted USD values only for rows with a wrapped-SOL leg."""
+
+    updated_records: list[SolanaValuationRecord] = []
+    wrapped_sol_rows = 0
+    trusted_rows_populated = 0
+    skipped_existing_trusted_rows = 0
+    failed_lookup_rows = 0
+
+    for record in valuation_records:
+        if not _record_has_wrapped_sol_leg(record):
+            updated_records.append(record)
+            continue
+
+        wrapped_sol_rows += 1
+        if record.valuation_status == VALUATION_STATUS_TRUSTED and not overwrite_existing:
+            skipped_existing_trusted_rows += 1
+            updated_records.append(record)
+            continue
+
+        try:
+            lookup = lookup_fn(record.block_time)
+        except SolUsdLookupError:
+            failed_lookup_rows += 1
+            updated_records.append(record)
+            continue
+
+        sol_amount = _extract_wrapped_sol_amount(record)
+        usd_value = lookup.reference_price_usd * sol_amount
+        updated_records.append(
+            replace(
+                record,
+                valuation_source=(
+                    f"{lookup.source_name};product_id={lookup.product_id};"
+                    f"price_reference={lookup.price_reference_kind};"
+                    f"candle_start={lookup.reference_candle_start.isoformat()};"
+                    f"looked_up_at={lookup.lookup_timestamp.isoformat()}"
+                ),
+                usd_value=usd_value,
+                valuation_status=VALUATION_STATUS_TRUSTED,
+            )
+        )
+        trusted_rows_populated += 1
+
+    return WrappedSolTrustedValuationPopulationResult(
+        records=tuple(updated_records),
+        wrapped_sol_rows=wrapped_sol_rows,
+        trusted_rows_populated=trusted_rows_populated,
+        skipped_existing_trusted_rows=skipped_existing_trusted_rows,
+        failed_lookup_rows=failed_lookup_rows,
     )
 
 
@@ -297,6 +439,58 @@ def _validate_record_matches_transaction(
             "Trusted valuation record does not match normalized transaction fields for "
             f"{transaction.tx_hash}: {', '.join(mismatches)}"
         )
+
+
+def _validate_records_share_identity(
+    left: SolanaValuationRecord,
+    right: SolanaValuationRecord,
+) -> None:
+    mismatches: list[str] = []
+    for field_name in (
+        "wallet",
+        "block_time",
+        "token_in_address",
+        "token_out_address",
+        "amount_in",
+        "amount_out",
+    ):
+        if getattr(left, field_name) != getattr(right, field_name):
+            mismatches.append(field_name)
+    if mismatches:
+        raise ValueError(
+            "Valuation records disagree on identifying fields for "
+            f"{left.tx_hash}: {', '.join(mismatches)}"
+        )
+
+
+def _record_has_wrapped_sol_leg(record: SolanaValuationRecord) -> bool:
+    return (
+        record.token_in_address == SOLANA_WRAPPED_SOL_MINT
+        or record.token_out_address == SOLANA_WRAPPED_SOL_MINT
+    )
+
+
+def _extract_wrapped_sol_amount(record: SolanaValuationRecord) -> Decimal:
+    if record.token_in_address == SOLANA_WRAPPED_SOL_MINT:
+        return record.amount_in
+    if record.token_out_address == SOLANA_WRAPPED_SOL_MINT:
+        return record.amount_out
+    raise ValueError("Wrapped SOL leg is required to extract SOL amount")
+
+
+def _valuation_record_to_json(record: SolanaValuationRecord) -> dict[str, object]:
+    return {
+        "tx_hash": record.tx_hash,
+        "wallet": record.wallet,
+        "block_time": record.block_time.isoformat(),
+        "token_in_address": record.token_in_address,
+        "token_out_address": record.token_out_address,
+        "amount_in": str(record.amount_in),
+        "amount_out": str(record.amount_out),
+        "valuation_source": record.valuation_source,
+        "usd_value": str(record.usd_value) if record.usd_value is not None else None,
+        "valuation_status": record.valuation_status,
+    }
 
 
 def _parse_valuation_record(value: object) -> SolanaValuationRecord:

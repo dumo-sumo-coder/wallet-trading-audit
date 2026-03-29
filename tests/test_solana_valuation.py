@@ -6,6 +6,8 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,12 +19,19 @@ if str(SRC) not in sys.path:
 
 from normalize.schema import EventType  # noqa: E402
 from normalize.transactions import normalize_transaction  # noqa: E402
+from valuation.sol_usd_lookup import SolUsdLookupError, SolUsdLookupResult  # noqa: E402
 from valuation.solana_valuation import (  # noqa: E402
+    VALUATION_STATUS_PENDING,
     VALUATION_STATUS_TRUSTED,
     apply_trusted_usd_values,
+    build_pending_valuation_records,
     get_rows_requiring_valuation,
+    load_valuation_records,
     load_trusted_valuation_records,
+    merge_valuation_records,
+    populate_wrapped_sol_trusted_values,
     summarize_valuation_readiness,
+    write_valuation_records,
 )
 
 
@@ -143,12 +152,82 @@ class SolanaValuationTests(unittest.TestCase):
 
         self.assertEqual(loaded, ())
 
+    def test_merge_valuation_records_preserves_existing_and_adds_pending_rows(self) -> None:
+        buy = normalize_fixture("solana_transaction_response_buy_example.json")
+        sell = normalize_fixture("solana_transaction_response_sell_example.json")
+        existing = load_valuation_records_from_objects(
+            [build_trusted_record(buy, usd_value="100")],
+            include_all_statuses=True,
+        )
+
+        merged = merge_valuation_records(existing, get_rows_requiring_valuation([buy, sell]))
+
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[0].valuation_status, VALUATION_STATUS_TRUSTED)
+        self.assertEqual(merged[1].valuation_status, VALUATION_STATUS_PENDING)
+        self.assertEqual(merged[1].tx_hash, sell.tx_hash)
+
+    def test_populate_wrapped_sol_trusted_values_updates_only_wrapped_sol_rows(self) -> None:
+        buy = normalize_fixture("solana_transaction_response_buy_example.json")
+        sell = normalize_fixture("solana_transaction_response_sell_example.json")
+        pending_records = build_pending_valuation_records(
+            get_rows_requiring_valuation([buy, sell])
+        )
+
+        def _lookup(timestamp: datetime) -> SolUsdLookupResult:
+            candle_start = timestamp.replace(second=0, microsecond=0)
+            return SolUsdLookupResult(
+                source_name="coinbase_exchange_public_candles",
+                product_id="SOL-USD",
+                reference_price_usd=Decimal("100"),
+                price_reference_kind="minute_candle_open",
+                reference_candle_start=candle_start,
+                reference_candle_end=candle_start,
+                lookup_timestamp=datetime(2026, 3, 29, 2, 0, tzinfo=UTC),
+                request_url="https://api.exchange.coinbase.com/?redacted",
+            )
+
+        result = populate_wrapped_sol_trusted_values(
+            pending_records,
+            lookup_fn=_lookup,
+        )
+
+        self.assertEqual(result.wrapped_sol_rows, 2)
+        self.assertEqual(result.trusted_rows_populated, 2)
+        self.assertEqual(result.failed_lookup_rows, 0)
+        self.assertEqual(result.records[0].valuation_status, VALUATION_STATUS_TRUSTED)
+        self.assertEqual(result.records[0].usd_value, Decimal("100"))
+        self.assertEqual(result.records[1].usd_value, Decimal("150.0"))
+
+    def test_write_and_load_valuation_records_round_trip_all_statuses(self) -> None:
+        buy = normalize_fixture("solana_transaction_response_buy_example.json")
+        pending_record = build_pending_valuation_records(get_rows_requiring_valuation([buy]))[0]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "valuations.json"
+            write_valuation_records(path, [pending_record])
+            loaded = load_valuation_records(path, include_all_statuses=True)
+
+        self.assertEqual(loaded, (pending_record,))
+
 
 def load_trusted_valuation_records_from_objects(records: list[dict[str, object]]):
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "valuations.json"
         path.write_text(json.dumps({"valuations": records}, indent=2), encoding="utf-8")
         loaded = load_trusted_valuation_records(path)
+    return loaded
+
+
+def load_valuation_records_from_objects(
+    records: list[dict[str, object]],
+    *,
+    include_all_statuses: bool,
+):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "valuations.json"
+        path.write_text(json.dumps({"valuations": records}, indent=2), encoding="utf-8")
+        loaded = load_valuation_records(path, include_all_statuses=include_all_statuses)
     return loaded
 
 

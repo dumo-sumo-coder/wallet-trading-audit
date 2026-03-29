@@ -14,11 +14,17 @@ from .solana_valuation import (
     SolanaValuationApplicationResult,
     SolanaValuationReadinessSummary,
     SolanaValuationRecord,
+    WrappedSolTrustedValuationPopulationResult,
     apply_trusted_usd_values,
+    build_pending_valuation_records,
     find_local_trusted_valuation_path,
     get_rows_requiring_valuation,
+    load_valuation_records,
     load_trusted_valuation_records,
+    merge_valuation_records,
+    populate_wrapped_sol_trusted_values,
     summarize_valuation_readiness,
+    write_valuation_records,
 )
 
 __all__ = [
@@ -33,9 +39,15 @@ __all__ = [
     "SolanaValuationApplicationResult",
     "SolanaValuationReadinessSummary",
     "SolanaValuationRecord",
+    "WrappedSolTrustedValuationPopulationResult",
     "apply_trusted_usd_values",
+    "build_pending_valuation_records",
     "find_local_trusted_valuation_path",
     "get_rows_requiring_valuation",
+    "load_valuation_records",
     "load_trusted_valuation_records",
+    "merge_valuation_records",
+    "populate_wrapped_sol_trusted_values",
     "summarize_valuation_readiness",
+    "write_valuation_records",
 ]

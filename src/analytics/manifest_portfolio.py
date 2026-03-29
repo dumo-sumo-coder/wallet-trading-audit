@@ -43,6 +43,22 @@ class PortfolioWalletSummary:
     rows_requiring_valuation_after_count: int | None
     unsupported_fifo_transactions_count: int | None
     skipped_missing_valuation_count: int | None
+    unsupported_patterns: tuple["UnsupportedCasePatternCount", ...]
+
+
+@dataclass(frozen=True, slots=True)
+class UnsupportedCasePatternCount:
+    pattern_key: str
+    label: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioUnsupportedPatternSummary:
+    pattern_key: str
+    label: str
+    total_count: int
+    affected_wallets: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +106,7 @@ class ManifestPortfolioAggregateSummary:
     worst_wallets_by_win_rate: tuple[PortfolioWalletRanking, ...]
     loss_concentration_by_wallet: tuple[PortfolioWalletLossConcentration, ...]
     loss_concentration_by_token: tuple[PortfolioTokenLossConcentration, ...]
+    unsupported_patterns_across_wallets: tuple[PortfolioUnsupportedPatternSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +153,9 @@ def build_manifest_portfolio_report(
             worst_wallets_by_win_rate=_rank_wallets_by_win_rate(included_wallets, reverse=False),
             loss_concentration_by_wallet=_summarize_wallet_loss_concentration(included_wallets),
             loss_concentration_by_token=_summarize_token_loss_concentration(included_wallets),
+            unsupported_patterns_across_wallets=_summarize_unsupported_patterns(
+                wallet_summaries_tuple
+            ),
         ),
     )
 
@@ -256,4 +276,32 @@ def _to_wallet_ranking(
         win_rate=wallet_summary.win_rate,
         matched_trade_count=wallet_summary.matched_trade_count,
         status=wallet_summary.status,
+    )
+
+
+def _summarize_unsupported_patterns(
+    wallet_summaries: Sequence[PortfolioWalletSummary],
+) -> tuple[PortfolioUnsupportedPatternSummary, ...]:
+    totals_by_pattern: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    labels_by_pattern: dict[str, str] = {}
+    wallets_by_pattern: dict[str, set[str]] = defaultdict(set)
+
+    for wallet_summary in wallet_summaries:
+        for pattern in wallet_summary.unsupported_patterns:
+            totals_by_pattern[pattern.pattern_key] += Decimal(pattern.count)
+            labels_by_pattern[pattern.pattern_key] = pattern.label
+            wallets_by_pattern[pattern.pattern_key].add(wallet_summary.wallet)
+
+    ranked_patterns = sorted(
+        totals_by_pattern.items(),
+        key=lambda item: (-int(item[1]), labels_by_pattern[item[0]], item[0]),
+    )
+    return tuple(
+        PortfolioUnsupportedPatternSummary(
+            pattern_key=pattern_key,
+            label=labels_by_pattern[pattern_key],
+            total_count=int(total_count),
+            affected_wallets=len(wallets_by_pattern[pattern_key]),
+        )
+        for pattern_key, total_count in ranked_patterns
     )

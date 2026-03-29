@@ -18,6 +18,7 @@ from analytics.manifest_portfolio import (  # noqa: E402
     STATUS_INCLUDED_COMPLETE,
     STATUS_INCLUDED_SUPPORTED_SUBSET,
     PortfolioWalletSummary,
+    UnsupportedCasePatternCount,
     build_manifest_portfolio_report,
 )
 from analytics.trade_diagnostics import TokenPnlDiagnostic  # noqa: E402
@@ -34,6 +35,7 @@ def build_wallet_summary(
     win_rate: str | None,
     matched_trade_count: int,
     token_pnl: tuple[tuple[str, str], ...],
+    unsupported_patterns: tuple[tuple[str, str, int], ...] = (),
 ) -> PortfolioWalletSummary:
     pnl_value = Decimal(realized_pnl_usd) if realized_pnl_usd is not None else None
     win_rate_value = Decimal(win_rate) if win_rate is not None else None
@@ -75,6 +77,14 @@ def build_wallet_summary(
         rows_requiring_valuation_after_count=0,
         unsupported_fifo_transactions_count=0,
         skipped_missing_valuation_count=0,
+        unsupported_patterns=tuple(
+            UnsupportedCasePatternCount(
+                pattern_key=pattern_key,
+                label=label,
+                count=count,
+            )
+            for pattern_key, label, count in unsupported_patterns
+        ),
     )
 
 
@@ -136,6 +146,7 @@ class ManifestPortfolioAggregationTests(unittest.TestCase):
             report.summary.loss_concentration_by_token[0].loss_contribution_pct,
             Decimal("0.75"),
         )
+        self.assertEqual(report.summary.unsupported_patterns_across_wallets, ())
 
     def test_build_manifest_portfolio_report_is_safe_when_every_wallet_is_excluded(self) -> None:
         report = build_manifest_portfolio_report(
@@ -159,6 +170,47 @@ class ManifestPortfolioAggregationTests(unittest.TestCase):
         self.assertEqual(report.summary.worst_wallets_by_win_rate, ())
         self.assertEqual(report.summary.loss_concentration_by_wallet, ())
         self.assertEqual(report.summary.loss_concentration_by_token, ())
+        self.assertEqual(report.summary.unsupported_patterns_across_wallets, ())
+
+    def test_build_manifest_portfolio_report_groups_unsupported_patterns_across_wallets(self) -> None:
+        report = build_manifest_portfolio_report(
+            (
+                build_wallet_summary(
+                    wallet="WalletA",
+                    label="Alpha",
+                    status=STATUS_EXCLUDED_NOT_MEANINGFUL,
+                    included_in_aggregate=False,
+                    realized_pnl_usd=None,
+                    win_rate=None,
+                    matched_trade_count=0,
+                    token_pnl=(),
+                    unsupported_patterns=(
+                        ("multiple_token_deltas", "multiple_token_deltas_or_multi_leg", 5),
+                    ),
+                ),
+                build_wallet_summary(
+                    wallet="WalletB",
+                    label="Beta",
+                    status=STATUS_EXCLUDED_NOT_MEANINGFUL,
+                    included_in_aggregate=False,
+                    realized_pnl_usd=None,
+                    win_rate=None,
+                    matched_trade_count=0,
+                    token_pnl=(),
+                    unsupported_patterns=(
+                        ("multiple_token_deltas", "multiple_token_deltas_or_multi_leg", 3),
+                        ("failed_transactions", "failed_transactions", 2),
+                    ),
+                ),
+            )
+        )
+
+        self.assertEqual(
+            report.summary.unsupported_patterns_across_wallets[0].pattern_key,
+            "multiple_token_deltas",
+        )
+        self.assertEqual(report.summary.unsupported_patterns_across_wallets[0].total_count, 8)
+        self.assertEqual(report.summary.unsupported_patterns_across_wallets[0].affected_wallets, 2)
 
 
 if __name__ == "__main__":

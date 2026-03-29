@@ -15,6 +15,7 @@ from .schema import (
 
 LAMPORTS_PER_SOL = Decimal("1000000000")
 SOLANA_WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
+SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 ZERO = Decimal("0")
 
 
@@ -67,7 +68,9 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
         result,
         wallet=wallet,
     )
-    economic_native_delta_lamports = wallet_native_delta_lamports + fee_lamports
+    economic_native_delta_lamports = wallet_native_delta_lamports
+    if _wallet_paid_solana_fee(result, wallet=wallet):
+        economic_native_delta_lamports += fee_lamports
     token_deltas = _extract_wallet_token_balance_deltas(meta, wallet=wallet)
     non_zero_token_deltas = {
         mint: amount_delta
@@ -83,6 +86,34 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
     if ambiguous_reason is not None:
         raise ValueError(
             f"Unsupported Solana normalization case: {ambiguous_reason}"
+        )
+
+    if _is_exact_two_token_zero_native_swap(
+        non_zero_token_deltas=non_zero_token_deltas,
+        economic_native_delta_lamports=economic_native_delta_lamports,
+    ):
+        (
+            token_in_address,
+            amount_in,
+            token_out_address,
+            amount_out,
+        ) = _extract_two_token_zero_native_swap_legs(non_zero_token_deltas)
+        return _build_solana_row(
+            wallet=wallet,
+            tx_hash=tx_hash,
+            block_time=block_time,
+            token_in_address=token_in_address,
+            token_out_address=token_out_address,
+            amount_in=amount_in,
+            amount_out=amount_out,
+            usd_value=_derive_explicit_swap_usd_value(
+                token_in_address=token_in_address,
+                amount_in=amount_in,
+                token_out_address=token_out_address,
+                amount_out=amount_out,
+            ),
+            fee_native=fee_native,
+            event_type=EventType.SWAP,
         )
 
     if not non_zero_token_deltas:
@@ -148,6 +179,12 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
                 token_out_address=SOLANA_WRAPPED_SOL_MINT,
                 amount_in=token_delta,
                 amount_out=_lamports_to_sol(-economic_native_delta_lamports),
+                usd_value=_derive_explicit_swap_usd_value(
+                    token_in_address=mint,
+                    amount_in=token_delta,
+                    token_out_address=SOLANA_WRAPPED_SOL_MINT,
+                    amount_out=_lamports_to_sol(-economic_native_delta_lamports),
+                ),
                 fee_native=fee_native,
                 event_type=EventType.SWAP,
             )
@@ -176,6 +213,12 @@ def _normalize_solana_provider_payload(raw: Mapping[str, object]) -> dict[str, o
         token_out_address=mint,
         amount_in=_lamports_to_sol(economic_native_delta_lamports),
         amount_out=token_out_amount,
+        usd_value=_derive_explicit_swap_usd_value(
+            token_in_address=SOLANA_WRAPPED_SOL_MINT,
+            amount_in=_lamports_to_sol(economic_native_delta_lamports),
+            token_out_address=mint,
+            amount_out=token_out_amount,
+        ),
         fee_native=fee_native,
         event_type=EventType.SWAP,
     )
@@ -366,6 +409,22 @@ def _extract_wallet_native_sol_delta_lamports(
     return post_balance - pre_balance
 
 
+def _wallet_paid_solana_fee(
+    result: Mapping[str, object],
+    *,
+    wallet: str,
+) -> bool:
+    transaction = _require_mapping(result, "transaction")
+    message = _require_mapping(transaction, "message")
+    account_keys = message.get("accountKeys")
+    if not isinstance(account_keys, list) or not account_keys:
+        raise ValueError(
+            "Unsupported Solana normalization case: accountKeys is missing"
+        )
+    fee_payer = _require_text_value(account_keys[0], "accountKeys entry")
+    return fee_payer == wallet
+
+
 def _extract_wallet_token_balance_deltas(
     meta: Mapping[str, object],
     *,
@@ -391,6 +450,11 @@ def _detect_ambiguous_solana_case(
     economic_native_delta_lamports: Decimal,
 ) -> str | None:
     if len(non_zero_token_deltas) > 1:
+        if _is_exact_two_token_zero_native_swap(
+            non_zero_token_deltas=non_zero_token_deltas,
+            economic_native_delta_lamports=economic_native_delta_lamports,
+        ):
+            return None
         return (
             "multiple wallet token balance deltas detected. TODO: add "
             "fixture-driven handling for multi-leg or protocol-specific flows "
@@ -442,6 +506,52 @@ def _extract_wallet_token_amounts(
     return token_amounts
 
 
+def _is_exact_two_token_zero_native_swap(
+    *,
+    non_zero_token_deltas: Mapping[str, Decimal],
+    economic_native_delta_lamports: Decimal,
+) -> bool:
+    if economic_native_delta_lamports != ZERO or len(non_zero_token_deltas) != 2:
+        return False
+    positive_mints = [mint for mint, delta in non_zero_token_deltas.items() if delta > ZERO]
+    negative_mints = [mint for mint, delta in non_zero_token_deltas.items() if delta < ZERO]
+    return len(positive_mints) == 1 and len(negative_mints) == 1
+
+
+def _extract_two_token_zero_native_swap_legs(
+    non_zero_token_deltas: Mapping[str, Decimal],
+) -> tuple[str, Decimal, str, Decimal]:
+    if not _is_exact_two_token_zero_native_swap(
+        non_zero_token_deltas=non_zero_token_deltas,
+        economic_native_delta_lamports=ZERO,
+    ):
+        raise ValueError("Expected exact two-token zero-native swap pattern")
+
+    token_in_address = next(
+        mint for mint, delta in non_zero_token_deltas.items() if delta > ZERO
+    )
+    token_out_address = next(
+        mint for mint, delta in non_zero_token_deltas.items() if delta < ZERO
+    )
+    amount_in = non_zero_token_deltas[token_in_address]
+    amount_out = -non_zero_token_deltas[token_out_address]
+    return token_in_address, amount_in, token_out_address, amount_out
+
+
+def _derive_explicit_swap_usd_value(
+    *,
+    token_in_address: str | None,
+    amount_in: Decimal,
+    token_out_address: str | None,
+    amount_out: Decimal,
+) -> Decimal | None:
+    if token_in_address == SOLANA_USDC_MINT:
+        return amount_in
+    if token_out_address == SOLANA_USDC_MINT:
+        return amount_out
+    return None
+
+
 def _extract_ui_token_amount(row: Mapping[str, object]) -> Decimal:
     ui_token_amount = row.get("uiTokenAmount")
     if not isinstance(ui_token_amount, Mapping):
@@ -466,6 +576,7 @@ def _build_solana_row(
     token_out_address: str | None,
     amount_in: Decimal,
     amount_out: Decimal,
+    usd_value: Decimal | None = None,
     fee_native: Decimal,
     event_type: EventType,
 ) -> dict[str, object]:
@@ -478,7 +589,7 @@ def _build_solana_row(
         "token_out_address": token_out_address,
         "amount_in": amount_in,
         "amount_out": amount_out,
-        "usd_value": None,
+        "usd_value": usd_value,
         "fee_native": fee_native,
         "fee_usd": None,
         "event_type": event_type.value,

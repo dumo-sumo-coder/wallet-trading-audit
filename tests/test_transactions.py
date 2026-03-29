@@ -234,6 +234,103 @@ class NormalizeTransactionTests(unittest.TestCase):
         ):
             normalize_solana_tx(ambiguous)
 
+    def test_normalize_solana_tx_supports_exact_two_token_zero_native_swap(self) -> None:
+        raw = copy.deepcopy(load_json_fixture("solana_transaction_response_buy_example.json"))
+        result = raw["result"]
+        meta = result["meta"]
+        wallet = "47eFuHR9ste9kopiJ9eRxcwahmE62JovbKe5r7AjANut"
+
+        meta["fee"] = 0
+        transaction = result["transaction"]
+        message = transaction["message"]
+        account_keys = message["accountKeys"]
+        wallet_index = account_keys.index(wallet)
+        pre_balances = meta["preBalances"]
+        post_balances = meta["postBalances"]
+        post_balances[wallet_index] = pre_balances[wallet_index]
+
+        meta["preTokenBalances"] = [
+            {
+                "accountIndex": 2,
+                "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "owner": wallet,
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                    "amount": "5000000",
+                    "decimals": 6,
+                    "uiAmount": 5.0,
+                    "uiAmountString": "5",
+                },
+            }
+        ]
+
+        adapted = normalize_solana_tx(raw)
+
+        self.assertEqual(adapted["event_type"], "swap")
+        self.assertEqual(
+            adapted["token_in_address"],
+            "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
+        )
+        self.assertEqual(
+            adapted["token_out_address"],
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        )
+        self.assertEqual(Decimal(str(adapted["amount_in"])), Decimal("25"))
+        self.assertEqual(Decimal(str(adapted["amount_out"])), Decimal("5"))
+        self.assertEqual(Decimal(str(adapted["usd_value"])), Decimal("5"))
+        self.assertEqual(Decimal(str(adapted["fee_native"])), Decimal("0"))
+
+    def test_normalize_solana_tx_supports_exact_two_token_swap_when_wallet_did_not_pay_fee(
+        self,
+    ) -> None:
+        raw = copy.deepcopy(load_json_fixture("solana_transaction_response_buy_example.json"))
+        result = raw["result"]
+        meta = result["meta"]
+        wallet = "47eFuHR9ste9kopiJ9eRxcwahmE62JovbKe5r7AjANut"
+
+        transaction = result["transaction"]
+        message = transaction["message"]
+        account_keys = message["accountKeys"]
+        wallet_index = account_keys.index(wallet)
+        self.assertEqual(wallet_index, 0)
+        account_keys[0], account_keys[1] = account_keys[1], account_keys[0]
+        meta["fee"] = 5000
+        pre_balances = meta["preBalances"]
+        post_balances = meta["postBalances"]
+        pre_balances[0], pre_balances[1] = pre_balances[1], pre_balances[0]
+        post_balances[0], post_balances[1] = post_balances[1], post_balances[0]
+        wallet_index = account_keys.index(wallet)
+        post_balances[wallet_index] = pre_balances[wallet_index]
+
+        meta["preTokenBalances"] = [
+            {
+                "accountIndex": 2,
+                "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "owner": wallet,
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                    "amount": "5000000",
+                    "decimals": 6,
+                    "uiAmount": 5.0,
+                    "uiAmountString": "5",
+                },
+            }
+        ]
+
+        adapted = normalize_solana_tx(raw)
+
+        self.assertEqual(adapted["event_type"], "swap")
+        self.assertEqual(
+            adapted["token_in_address"],
+            "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E",
+        )
+        self.assertEqual(
+            adapted["token_out_address"],
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        )
+        self.assertEqual(Decimal(str(adapted["usd_value"])), Decimal("5"))
+        self.assertEqual(Decimal(str(adapted["fee_native"])), Decimal("0.000005"))
+
 
 if __name__ == "__main__":
     unittest.main()

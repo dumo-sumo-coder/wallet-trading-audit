@@ -9,6 +9,8 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,7 +43,11 @@ from analytics.manifest_portfolio import (  # noqa: E402
     STATUS_EXCLUDED_UNSUPPORTED_CHAIN,
     STATUS_INCLUDED_COMPLETE,
 )
-from valuation.solana_valuation import VALUATION_STATUS_TRUSTED  # noqa: E402
+from valuation.sol_usd_lookup import SolUsdLookupResult  # noqa: E402
+from valuation.solana_valuation import (  # noqa: E402
+    VALUATION_STATUS_TRUSTED,
+    populate_wrapped_sol_trusted_values as actual_populate_wrapped_sol_trusted_values,
+)
 
 
 def load_json_fixture(name: str) -> dict[str, object]:
@@ -453,6 +459,123 @@ class AnalyzeWalletManifestPortfolioScriptTests(unittest.TestCase):
             self.assertEqual(metadata_payload["total_pages_fetched"], 2)
             self.assertEqual(metadata_payload["total_tx_count"], 3)
             self.assertEqual(len(metadata_payload["page_snapshot_paths"]), 2)
+
+    def test_portfolio_analysis_auto_applies_wrapped_sol_valuations(self) -> None:
+        manifest_text = (
+            "wallet,chain,label,group\n"
+            f"{FIXTURE_SOLANA_WALLET},solana,Alpha Wallet,Recent\n"
+        )
+        buy = load_json_fixture("solana_transaction_response_buy_example.json")
+        sell = load_json_fixture("solana_transaction_response_sell_example.json")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+            entry = load_wallet_manifest(manifest_path)[0]
+
+            write_wallet_snapshot(
+                repository_root=repository_root,
+                manifest_entry=entry,
+                snapshot_filename="wallet_snapshot_20260329T060000Z.json",
+                snapshot_payload=build_snapshot_payload(
+                    copy.deepcopy(buy),
+                    copy.deepcopy(sell),
+                    wallet=FIXTURE_SOLANA_WALLET,
+                ),
+                trusted_valuations=None,
+            )
+
+            def _lookup(timestamp: datetime) -> SolUsdLookupResult:
+                candle_start = timestamp.replace(second=0, microsecond=0)
+                return SolUsdLookupResult(
+                    source_name="coinbase_exchange_public_candles",
+                    product_id="SOL-USD",
+                    reference_price_usd=Decimal("100"),
+                    price_reference_kind="minute_candle_open",
+                    reference_candle_start=candle_start,
+                    reference_candle_end=candle_start,
+                    lookup_timestamp=datetime(2026, 3, 29, 2, 0, tzinfo=UTC),
+                    request_url="https://api.exchange.coinbase.com/?redacted",
+                )
+
+            def _populate(records, *, overwrite_existing=False):
+                return actual_populate_wrapped_sol_trusted_values(
+                    records,
+                    overwrite_existing=overwrite_existing,
+                    lookup_fn=_lookup,
+                )
+
+            with patch.object(MODULE, "populate_wrapped_sol_trusted_values", side_effect=_populate):
+                run = MODULE.analyze_wallet_manifest_portfolio(
+                    manifest_path,
+                    repository_root=repository_root,
+                    output_dir=repository_root / "data" / "reports" / "portfolio",
+                )
+
+            wallet_summary = run.report.wallet_summaries[0]
+            self.assertEqual(wallet_summary.status, STATUS_INCLUDED_COMPLETE)
+            self.assertEqual(wallet_summary.realized_pnl_usd, MODULE.Decimal("50.0"))
+            self.assertEqual(wallet_summary.matched_trade_count, 1)
+            valuation_path = (
+                repository_root / "data" / "raw" / "solana" / "Alpha_Wallet"
+                / "wallet_snapshot_20260329T060000Z_trusted_valuations.json"
+            )
+            self.assertTrue(valuation_path.exists())
+            saved = json.loads(valuation_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["valuations"][0]["valuation_status"], "trusted")
+
+    def test_portfolio_analysis_groups_unsupported_patterns_by_wallet(self) -> None:
+        manifest_text = (
+            "wallet,chain,label,group\n"
+            f"{FIXTURE_SOLANA_WALLET},solana,Alpha Wallet,Recent\n"
+        )
+        ambiguous = copy.deepcopy(load_json_fixture("solana_transaction_response_buy_example.json"))
+        ambiguous["result"]["meta"]["postTokenBalances"].append(
+            {
+                "accountIndex": 2,
+                "mint": "Es9vMFrzaCERmJfr6Woj7q4Tt6kRXKuX3sX5Yucs5cjB",
+                "owner": FIXTURE_SOLANA_WALLET,
+                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "uiTokenAmount": {
+                    "amount": "1000000",
+                    "decimals": 6,
+                    "uiAmount": 1.0,
+                    "uiAmountString": "1",
+                },
+            }
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository_root = Path(temp_dir)
+            manifest_path = repository_root / "data" / "wallet_manifest.csv"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(manifest_text, encoding="utf-8")
+            entry = load_wallet_manifest(manifest_path)[0]
+            write_wallet_snapshot(
+                repository_root=repository_root,
+                manifest_entry=entry,
+                snapshot_filename="wallet_snapshot_20260329T070000Z.json",
+                snapshot_payload=build_snapshot_payload(
+                    ambiguous,
+                    wallet=FIXTURE_SOLANA_WALLET,
+                ),
+                trusted_valuations=None,
+            )
+
+            run = MODULE.analyze_wallet_manifest_portfolio(
+                manifest_path,
+                repository_root=repository_root,
+                output_dir=repository_root / "data" / "reports" / "portfolio",
+            )
+
+        wallet_summary = run.report.wallet_summaries[0]
+        self.assertEqual(wallet_summary.unsupported_patterns[0].pattern_key, "multiple_token_deltas")
+        self.assertEqual(
+            run.report.summary.unsupported_patterns_across_wallets[0].pattern_key,
+            "multiple_token_deltas",
+        )
 
 
 if __name__ == "__main__":
