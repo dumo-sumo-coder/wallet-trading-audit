@@ -24,6 +24,11 @@ from analytics.trade_diagnostics import (  # noqa: E402
     TradeDiagnosticSummary,
     build_trade_diagnostic_report,
 )
+from analytics.trade_filter_simulation import (  # noqa: E402
+    TradeFilterSimulationReport,
+    TradeFilterSimulationSummary,
+    build_default_trade_filter_simulation_report,
+)
 from analytics.wallet_behavior import (  # noqa: E402
     WalletBehaviorReport,
     WalletBehaviorSummary,
@@ -102,6 +107,13 @@ class BehaviorDiagnosticArtifacts:
 
 
 @dataclass(frozen=True, slots=True)
+class SimulationDiagnosticArtifacts:
+    simulation_report_json_path: str
+    simulation_report_csv_path: str
+    report_summary: TradeFilterSimulationSummary
+
+
+@dataclass(frozen=True, slots=True)
 class SingleWalletSnapshotAnalysis:
     snapshot_path: str
     summary_path: str
@@ -116,6 +128,7 @@ class SingleWalletSnapshotAnalysis:
     fifo_summary: FifoCoverageSummary
     trade_diagnostics: TradeDiagnosticArtifacts
     behavior_diagnostics: BehaviorDiagnosticArtifacts
+    simulation_diagnostics: SimulationDiagnosticArtifacts
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +142,7 @@ class _SnapshotAnalysisComputation:
     analysis: SingleWalletSnapshotAnalysis
     trade_report: TradeDiagnosticReport
     behavior_report: WalletBehaviorReport
+    simulation_report: TradeFilterSimulationReport
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -212,6 +226,11 @@ def analyze_fetch_metadata_path(
         json_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_behavior_report.json"),
         csv_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_behavior_report.csv"),
     )
+    write_simulation_diagnostic_report(
+        computation.simulation_report,
+        json_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_simulation_report.json"),
+        csv_path=fetch_metadata_path.with_name(f"{fetch_metadata_path.stem}_simulation_report.csv"),
+    )
     return analysis
 
 
@@ -237,6 +256,11 @@ def analyze_snapshot_path(
         computation.behavior_report,
         json_path=snapshot_path.with_name(f"{snapshot_path.stem}_behavior_report.json"),
         csv_path=snapshot_path.with_name(f"{snapshot_path.stem}_behavior_report.csv"),
+    )
+    write_simulation_diagnostic_report(
+        computation.simulation_report,
+        json_path=snapshot_path.with_name(f"{snapshot_path.stem}_simulation_report.json"),
+        csv_path=snapshot_path.with_name(f"{snapshot_path.stem}_simulation_report.csv"),
     )
     return analysis
 
@@ -416,6 +440,9 @@ def _analyze_snapshot_mapping_with_report(
         )
     )
     behavior_report = build_wallet_behavior_report(trade_report.matched_trades)
+    simulation_report = build_default_trade_filter_simulation_report(
+        trade_report.matched_trades
+    )
 
     return _SnapshotAnalysisComputation(
         analysis=SingleWalletSnapshotAnalysis(
@@ -450,9 +477,19 @@ def _analyze_snapshot_mapping_with_report(
                 ),
                 report_summary=behavior_report.summary,
             ),
+            simulation_diagnostics=SimulationDiagnosticArtifacts(
+                simulation_report_json_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_simulation_report.json")
+                ),
+                simulation_report_csv_path=_relative_path_text(
+                    snapshot_path.with_name(f"{snapshot_path.stem}_simulation_report.csv")
+                ),
+                report_summary=simulation_report.summary,
+            ),
         ),
         trade_report=trade_report,
         behavior_report=behavior_report,
+        simulation_report=simulation_report,
     )
 
 
@@ -574,6 +611,61 @@ def write_behavior_diagnostic_report(
                     "realized_pnl_usd": _csv_value(trade_row.realized_pnl_usd),
                     "outcome": trade_row.outcome,
                     "prior_trade_outcome": trade_row.prior_trade_outcome or "",
+                }
+            )
+
+    return json_path, csv_path
+
+
+def write_simulation_diagnostic_report(
+    report: TradeFilterSimulationReport,
+    *,
+    json_path: Path,
+    csv_path: Path,
+) -> tuple[Path, Path]:
+    json_path.write_text(
+        json.dumps(_jsonify(asdict(report)), indent=2),
+        encoding="utf-8",
+    )
+
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=(
+                "scenario_name",
+                "rule_type",
+                "threshold_value",
+                "original_trade_count",
+                "remaining_trade_count",
+                "filtered_out_trade_count",
+                "original_realized_pnl_usd",
+                "filtered_out_realized_pnl_usd",
+                "new_realized_pnl_usd",
+                "delta_vs_original_pnl_usd",
+                "excluded_tokens",
+            ),
+        )
+        writer.writeheader()
+        for scenario_result in report.summary.scenario_results:
+            writer.writerow(
+                {
+                    "scenario_name": scenario_result.scenario_name,
+                    "rule_type": scenario_result.rule_type,
+                    "threshold_value": _csv_value(scenario_result.threshold_value),
+                    "original_trade_count": scenario_result.original_trade_count,
+                    "remaining_trade_count": scenario_result.remaining_trade_count,
+                    "filtered_out_trade_count": scenario_result.filtered_out_trade_count,
+                    "original_realized_pnl_usd": str(
+                        scenario_result.original_realized_pnl_usd
+                    ),
+                    "filtered_out_realized_pnl_usd": str(
+                        scenario_result.filtered_out_realized_pnl_usd
+                    ),
+                    "new_realized_pnl_usd": str(scenario_result.new_realized_pnl_usd),
+                    "delta_vs_original_pnl_usd": str(
+                        scenario_result.delta_vs_original_pnl_usd
+                    ),
+                    "excluded_tokens": ",".join(scenario_result.excluded_tokens),
                 }
             )
 
@@ -702,6 +794,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         .top_5_losing_tokens_contribution_pct
     )
     print(f"Top loss concentration: {top_loss_concentration}")
+    simulation_diagnostics = analysis.simulation_diagnostics
+    print(f"Simulation report JSON: {simulation_diagnostics.simulation_report_json_path}")
+    print(f"Simulation report CSV: {simulation_diagnostics.simulation_report_csv_path}")
+    print(
+        "Best improvement scenario: "
+        f"{simulation_diagnostics.report_summary.best_improvement_scenario_name}"
+    )
+    print(
+        "Best improvement delta: "
+        f"{simulation_diagnostics.report_summary.best_improvement_delta_usd}"
+    )
+    print(
+        "Best improvement new realized PnL: "
+        f"{simulation_diagnostics.report_summary.best_improvement_new_realized_pnl_usd}"
+    )
     return 0
 
 
@@ -973,7 +1080,7 @@ def _jsonify(value: Any) -> Any:
     return value
 
 
-def _csv_value(value: Decimal | None) -> str:
+def _csv_value(value: object | None) -> str:
     if value is None:
         return ""
     return str(value)

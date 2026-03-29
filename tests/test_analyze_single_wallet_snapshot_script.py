@@ -228,6 +228,22 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
                 behavior_rows = list(csv.DictReader(handle))
             self.assertEqual(len(behavior_rows), 1)
             self.assertEqual(behavior_rows[0]["outcome"], "win")
+            self.assertEqual(analysis.simulation_diagnostics.report_summary.original_trade_count, 1)
+            simulation_report_json_path = ROOT / analysis.simulation_diagnostics.simulation_report_json_path
+            simulation_report_csv_path = ROOT / analysis.simulation_diagnostics.simulation_report_csv_path
+            self.assertTrue(simulation_report_json_path.exists())
+            self.assertTrue(simulation_report_csv_path.exists())
+            simulation_report_payload = json.loads(
+                simulation_report_json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(simulation_report_payload["summary"]["original_trade_count"], 1)
+            self.assertGreater(
+                len(simulation_report_payload["summary"]["scenario_results"]),
+                0,
+            )
+            with simulation_report_csv_path.open("r", encoding="utf-8", newline="") as handle:
+                simulation_rows = list(csv.DictReader(handle))
+            self.assertGreater(len(simulation_rows), 0)
 
         self.assertEqual(analysis.total_raw_transactions, 2)
         self.assertEqual(analysis.normalized_transactions_count, 2)
@@ -258,6 +274,7 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(analysis.fifo_summary.meaningful, False)
         self.assertEqual(analysis.trade_diagnostics.report_summary.total_matched_trades, 0)
         self.assertEqual(analysis.behavior_diagnostics.report_summary.total_matched_trades, 0)
+        self.assertEqual(analysis.simulation_diagnostics.report_summary.original_trade_count, 0)
 
     def test_analyze_snapshot_applies_local_trusted_valuations_and_enables_fifo(self) -> None:
         buy = load_json_fixture("solana_transaction_response_buy_example.json")
@@ -334,6 +351,25 @@ class AnalyzeSingleWalletSnapshotScriptTests(unittest.TestCase):
             self.assertEqual(
                 behavior_report_payload["summary"]["holding_time_buckets"][2]["bucket"],
                 "1m_to_lt_5m",
+            )
+            self.assertEqual(
+                analysis.simulation_diagnostics.report_summary.original_trade_count,
+                1,
+            )
+            simulation_report_json_path = temp_path / "wallet_snapshot_20260329T030000Z_simulation_report.json"
+            simulation_report_csv_path = temp_path / "wallet_snapshot_20260329T030000Z_simulation_report.csv"
+            self.assertTrue(simulation_report_json_path.exists())
+            self.assertTrue(simulation_report_csv_path.exists())
+            simulation_report_payload = json.loads(
+                simulation_report_json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                simulation_report_payload["summary"]["original_realized_pnl_usd"],
+                "50",
+            )
+            self.assertGreater(
+                len(simulation_report_payload["summary"]["scenario_results"]),
+                0,
             )
 
         self.assertEqual(
